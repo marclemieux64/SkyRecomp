@@ -704,10 +704,6 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 #define HELD_REACH 25.0f
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
 enum { HELD_KINDS = sizeof HELD_COUNTS / sizeof HELD_COUNTS[0] };
-// Each hand's game draw mirrored (a negative determinant: one hand mesh drawn for both, the left one mirrored)? The
-// controller's frame then carries the same mirror (hand_k), or the left hand showed the right hand's shape, inside
-// out (its faces' winding turned with the mirror the game set its culling for).
-static bool g_hand_mirror[2];
 static float g_hand_game[2][12];     // each hand's game view block (game camera x its model) and its frame
 static uint64_t g_hand_game_frame[2];
 static struct {
@@ -764,7 +760,10 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     if (side < 0) {
         // A new mesh (taking out an item or pulling a trigger swaps in another pose's mesh): the side not drawn yet
         // this frame, else the one whose last position is nearer; with neither known yet, the side of the game
-        // camera it hangs on (measured: the mesh first seen on the camera's left is his right hand).
+        // camera it hangs on: in 1st person the camera faces his way, so the camera's left is his left hand.
+        // (Measured with SKYRECOMP_VR_HAND_LOG in Skyloft: the mesh holding the sword - his right hand - hangs on the
+        // camera's right; the other ~30 units to its left. Taken the other way round, each controller showed the
+        // other hand - mirrored - and the sword went to the left controller. SKYRECOMP_VR_HAND_SWAP=1: the old way.)
         const bool known[2] = {g_hand_last_frame[0] + 30 >= now && g_hand_last_frame[0], g_hand_last_frame[1] + 30 >= now && g_hand_last_frame[1]};
         const bool drawn[2] = {g_hand_last_frame[0] == now, g_hand_last_frame[1] == now};
         if (known[0] && known[1]) {
@@ -774,7 +773,11 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
                 d2[h] = a0 * a0 + a1 * a1 + a2 * a2;
             }
             side = drawn[0] != drawn[1] ? (drawn[0] ? 1 : 0) : d2[0] <= d2[1] ? 0 : 1;
-        } else side = dx < 0 ? 1 : 0;
+        } else {
+            static int swap = -1;
+            if (swap < 0) swap = getenv("SKYRECOMP_VR_HAND_SWAP") != NULL;
+            side = (dx < 0) == !swap ? 0 : 1;
+        }
         static int next;
         g_hand_mesh[next] = (__typeof__(g_hand_mesh[0])){vb, count, side};
         next = (next + 1) % 8;
@@ -784,7 +787,6 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     g_hand_count_cur = count;
     memcpy(g_hand_game[side], slot0 + 16, sizeof g_hand_game[side]);
     g_hand_game_frame[side] = now;
-    g_hand_mirror[side] = det3(slot0 + 16) < 0;
     {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1)
         static int log = -1;
         static uint64_t last[2];
@@ -814,9 +816,10 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     // known yet - in the left eye; the right eye's replay comes after, so only that eye moved it.
     static uint64_t part_count[HELD_KINDS][4];
     int k = -1;
+    bool part = false;  // (a known part, not the item itself)
     for (int i = 0; i < HELD_KINDS; i++) {
         if (count == HELD_COUNTS[i]) k = i;
-        for (int p = 0; p < 4; p++) if (part_count[i][p] && count == part_count[i][p]) k = i;
+        for (int p = 0; p < 4 && k < 0; p++) if (part_count[i][p] && count == part_count[i][p]) k = i, part = true;
     }
     if (k < 0) {
         for (int i = 0; i < HELD_KINDS && k < 0; i++) {
@@ -830,6 +833,10 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             if (p < 4) part_count[i][p] = count;
         }
         if (k < 0) return false;
+    } else if (part && g_held[k].frame == now) {  // (a known part after the item: only on the item's own joint)
+        bool same = true;
+        for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+        if (!same) return false;
     }
     if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
@@ -842,6 +849,7 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             const float d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < best) best = d2, side = s;
         }
+        if (part && side < 0) return false;  // (a known part's count drawn elsewhere: leaves the item's state alone)
         memcpy(g_held[k].block, m, sizeof g_held[k].block);
         g_held[k].frame = now;
         if (side != g_held[k].side) g_held[k].rel_frame = 0;  // (another hand: its offset measured afresh)
@@ -902,13 +910,6 @@ static void hand_k(int side, float k[12]) {
     const float back = adj[3] * 0.01f * vr_rig_units_per_metre();
     for (int i = 0; i < 3; i++) k[i * 4 + 0] = r[i * 3 + 0], k[i * 4 + 1] = r[i * 3 + 1], k[i * 4 + 2] = r[i * 3 + 2];
     k[3] = 0, k[7] = 0, k[11] = back;
-    // (the game drew this hand mirrored: the mesh's z - its palm side - mirrored too, fingers and thumb kept, so the
-    // hand keeps the game's shape and winding; a held item's H^-1 M then cancels it. SKYRECOMP_VR_HAND_NO_MIRROR=1:
-    // never)
-    static int no_mirror = -1;
-    if (no_mirror < 0) no_mirror = getenv("SKYRECOMP_VR_HAND_NO_MIRROR") != NULL;
-    if (!no_mirror && side >= 0 && side < 2 && g_hand_mirror[side])
-        for (int i = 0; i < 3; i++) k[i * 4 + 2] = -k[i * 4 + 2];
 }
 
 // (exec.c) Which hand a rigid draw is: 0 left, 1 right, -1 none
