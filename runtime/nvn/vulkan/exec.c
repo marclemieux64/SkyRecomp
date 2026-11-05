@@ -4671,9 +4671,13 @@ static void draw_(CmdRec *r, bool indexed) {
                                   b3.size, r->x[2], st.vbuf[0].addr, st.vbuf[0].size);
         }
         // (rigid draws: Link's hands, placed on the controllers by their camera - vr_rig.c)
-        if (!skinned && cam.addr)
-            vr_rig_set_hand_draw(vr_rig_hand_side((const float *)(uintptr_t)cam.addr, cam.size, r->x[2], st.vbuf[0].addr,
-                                                  st.vbuf[0].size));
+        if (!skinned && cam.addr) {
+            const int hand = vr_rig_hand_side((const float *)(uintptr_t)cam.addr, cam.size, r->x[2], st.vbuf[0].addr,
+                                              st.vbuf[0].size);
+            vr_rig_set_hand_draw(hand);
+            // (the sword or shield he holds: with that hand - vr_rig.c)
+            if (hand < 0) vr_rig_held_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2]);
+        }
         if (!skinned && cam.addr) {  // (the door held open in VR: its leaf turned - vr_rig.c)
             extern void vr_rig_door_draw(const float *slot0, uint64_t size0);
             vr_rig_door_draw((const float *)(uintptr_t)cam.addr, cam.size);

@@ -186,6 +186,20 @@ game's eye point stays at the surface.
 1st person moves the near plane to 15 units (`SKYRECOMP_VR_NEAR`) so Link's own head is clipped. Checked in Skyloft
 against near = 1: only the head pieces differ (no fog, depth-of-field or depth-fighting change).
 
+### The sword and shield in his hands (`runtime/vr/vr_rig.c`, `vr_rig_held_draw`)
+
+Link's hands go to the controllers (`hand_block`), but what he holds is drawn on its own: the sword (index count
+1056) and the shield (2352) are rigid draws the game poses on his hand's joint. Left alone they stay where the game
+animates them while the hand drawn goes to its controller. Each one in a hand is drawn through the same transform as
+that hand, followed by its offset from the game's hand (`H^-1 M`, from the two view blocks: the game camera cancels).
+So the grip is the game's own and nothing is tuned.
+
+Held or not is read from where the game puts it. Measured in Skyloft, in first person: a drawn sword's hilt sits
+10.3 to 10.6 units from the hand holding it, and a readied shield 10.8 units from its hand. Sheathed on his back, both
+are 50 or more units from either hand, so the cut-off is 25. The offset is measured in a frame where both the item and
+its hand are drawn. When the item comes first, the hand's draw measures it and the next frame uses it. Another draw
+with exactly the held item's block (a part on the same joint) goes with it. `SKYRECOMP_VR_NO_HELD=1` leaves them where
+the game puts them.
 ### The aiming reticle at the shot's end point (`runtime/hle/vr_aim.c`)
 
 On the flat HUD panel, the Slingshot's, Bow's, Clawshots' and Gust Bellows' reticle sits at the panel's distance,

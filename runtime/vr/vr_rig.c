@@ -694,8 +694,38 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
     if (g_grip_ok[0]) memcpy(g_grip[0], left, sizeof g_grip[0]);
     if (g_grip_ok[1]) memcpy(g_grip[1], right, sizeof g_grip[1]);
 }
+// ---- 1st person: what his hands hold (the sword, the shield). They're rigid draws of their own, posed by the game
+// on his hand's joint; placed with the hand, they'd stay where the game animates them while the hand drawn goes to
+// its controller. So each is drawn through the same world transform as the hand holding it: C K (H^-1 M), H^-1 M
+// being the item relative to the game's hand - the game's own grip, nothing tuned. Held or not is read from the
+// game's placement (measured in Skyloft, first person: a drawn sword's hilt sits 10.3-10.6 units from the hand
+// holding it, a readied shield 10.8 from its hand; sheathed, on his back, both are 50+ units from either hand).
+// SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
+#define HELD_REACH 25.0f
+static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
+enum { HELD_KINDS = sizeof HELD_COUNTS / sizeof HELD_COUNTS[0] };
+static float g_hand_game[2][12];     // each hand's game view block (game camera x its model) and its frame
+static uint64_t g_hand_game_frame[2];
+static struct {
+    float block[12];                 // this item's game view block, the frame it was drawn and the hand it's in
+    uint64_t frame;
+    int side;
+    float rel[12];                   // H^-1 M: the item relative to that hand, and the frame it was measured
+    uint64_t rel_frame;
+} g_held[HELD_KINDS];
+static bool g_held_on;               // (the draw being recorded is a held item: g_hand_draw its hand, g_held_k H^-1 M)
+static float g_held_k[12];
+
+static void held_measure(int k) {    // (the item and its hand drawn this frame: H^-1 M again)
+    float hi[12];
+    const int s = g_held[k].side;
+    if (s < 0 || g_hand_game_frame[s] != g_held[k].frame || !a_inverse(g_hand_game[s], hi)) return;
+    a_mul(hi, g_held[k].block, g_held[k].rel);
+    g_held[k].rel_frame = g_held[k].frame;
+}
+
 // (g_hand_orig, g_hand_repl: this hand draw's game view block and the one replacing it)
-void vr_rig_set_hand_draw(int side) { g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false; }
+void vr_rig_set_hand_draw(int side) { g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = false; }
 // (exec.c) This hand draw's game view block and its replacement: other uniform blocks holding the same matrix (the
 // shader's normals, for its lighting) get the replacement too.
 bool vr_rig_hand_blocks(float orig[12], float repl[12]) {
@@ -748,7 +778,66 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     memcpy(g_hand_last[side], w, sizeof w);
     g_hand_last_frame[side] = now;
     g_hand_count_cur = count;
+    memcpy(g_hand_game[side], slot0 + 16, sizeof g_hand_game[side]);
+    g_hand_game_frame[side] = now;
+    for (int k = 0; k < HELD_KINDS; k++)  // (an item drawn before its hand this frame: measured now, used next frame)
+        if (g_held[k].frame == now && g_held[k].side == side) held_measure(k);
     return side;
+}
+
+// (exec.c, a rigid draw that isn't a hand) The sword or shield in one of his hands: drawn with that hand, on its
+// controller (vr_rig_set_hand_draw's state, the item's own offset kept). False: not held - the game's placement.
+bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
+    static int off = -1;
+    if (off < 0) off = getenv("SKYRECOMP_VR_NO_HELD") != NULL;
+    if (off || !slot0 || !hands_on() || !sky_vr_is_scene_projection(slot0, size0)) return false;
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    const float *m = slot0 + 16;
+    int k = -1;
+    for (int i = 0; i < HELD_KINDS; i++)
+        if (count == HELD_COUNTS[i]) k = i;
+    if (k < 0) {  // (another part drawn on the held item's own joint - its exact block - goes with it)
+        for (int i = 0; i < HELD_KINDS && k < 0; i++) {
+            if (g_held[i].frame != now || g_held[i].side < 0) continue;
+            bool same = true;
+            for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[i].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+            if (same) k = i;
+        }
+        if (k < 0) return false;
+    } else if (g_held[k].frame != now) {
+        // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
+        // camera space: distances as in the world)
+        int side = -1;
+        float best = HELD_REACH * HELD_REACH;
+        for (int s = 0; s < 2; s++) {
+            if (!g_hand_game_frame[s] || g_hand_game_frame[s] + 1 < now) continue;
+            const float dx = m[3] - g_hand_game[s][3], dy = m[7] - g_hand_game[s][7], dz = m[11] - g_hand_game[s][11];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best) best = d2, side = s;
+        }
+        memcpy(g_held[k].block, m, sizeof g_held[k].block);
+        g_held[k].frame = now;
+        if (side != g_held[k].side) g_held[k].rel_frame = 0;  // (another hand: its offset measured afresh)
+        g_held[k].side = side;
+        held_measure(k);
+    }
+    const int side = g_held[k].side;
+    if (side < 0 || !g_held[k].rel_frame || g_held[k].rel_frame + 2 < now) return false;
+    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    float rel[12] = {0};
+    if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
+    else {  // (a part on the item's joint: the same offset, its own block's relation to the item kept)
+        float ii[12], part[12];
+        if (!a_inverse(g_held[k].block, ii)) return false;
+        a_mul(ii, m, part);
+        a_mul(g_held[k].rel, part, rel);
+    }
+    g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = true;
+    memcpy(g_held_k, rel, sizeof g_held_k);
+    static int said;
+    if (!said++) fprintf(stderr, "[vr] first person: Link's %s is on the %s controller\n", k ? "shield" : "sword", side ? "right" : "left");
+    return true;
 }
 
 // K: the hand mesh in its controller's grip (as on the vr-port branch, measured from the game's rest pose). Both hand
@@ -812,6 +901,14 @@ static bool hand_block(const VrRigAnchor *a, const float reference[7], const flo
         float h[3];
         if (atomic_load(&g_door_grab) == side && door_handle_hand(h))  // (holding the door: the hand on its handle)
             for (int i = 0; i < 3; i++) c[i * 4 + 3] = h[i];
+    }
+    if (g_held_on) {  // (a held item: the hand's frame, then the item where the game has it in that hand)
+        float ckh[12];
+        hand_k(side, k);
+        a_mul(c, k, ck);
+        a_mul(ck, g_held_k, ckh);
+        a_mul(game, ckh, out);
+        return true;
     }
     {   // holding the door's handle, or near enough to take it (hovering): the hand as the game's own door sequence
         // holds it - its rotation measured there (the left hand on the face Link stood at, in the door's frame), mirrored
