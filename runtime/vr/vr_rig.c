@@ -727,6 +727,7 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 #define HELD_MEMORY 60        // (frames)
 #define HELD_CONTINUITY 80.0f // (how far the held item may have moved since it was last drawn)
 #define HELD_PART_MIN_COUNT 24
+#define HELD_SAME_ITEM 30.0f  // (another draw with the item's count this close to it: part of the same item)
 #define HELD_BACK 30.0f       // (closer to his eye point than this, with its hand not drawn: on his back)
 #define HELD_BACK_FAR 45.0f   // (the same with its hand drawn far from it)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
@@ -916,11 +917,14 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         memcpy(g_held_k, g_held[k].rel, sizeof g_held_k);
         return true;
     } else if (g_held[k].frame == now) {
-        // Another draw with the item's own count this frame: the same item again (another pass: its exact block) or
-        // something else sharing the count - Skyloft's tower top shares the sword hilt's - left where it is.
+        // Another draw with the item's own count this frame: the sword is two (hilt and blade, measured: two 1056
+        // draws a frame, at different blocks) - one at the item goes with it, keeping its offset from it (below);
+        // something else sharing the count far from it - Skyloft's tower top shares the sword hilt's - stays.
+        const float dx = m[3] - g_held[k].block[3], dy = m[7] - g_held[k].block[7], dz = m[11] - g_held[k].block[11];
+        if (dx * dx + dy * dy + dz * dz > HELD_SAME_ITEM * HELD_SAME_ITEM) return false;
         bool same = true;
         for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
-        if (!same) return false;
+        if (!same) part = true;  // (its own offset from the item: as a part's)
     }
     if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
@@ -998,7 +1002,7 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         return false;
     }
     float rel[12] = {0};
-    if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
+    if (!part) memcpy(rel, g_held[k].rel, sizeof rel);
     else {  // (a part on the item's joint: the same offset, its own block's relation to the item kept)
         float ii[12], part[12];
         if (!a_inverse(g_held[k].block, ii)) return false;
