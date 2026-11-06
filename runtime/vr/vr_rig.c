@@ -725,6 +725,8 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 #define HELD_KEEP 70.0f
 #define HELD_PART_NEAR 40.0f
 #define HELD_MEMORY 60        // (frames)
+#define HELD_CONTINUITY 80.0f // (how far the held item may have moved since it was last drawn)
+#define HELD_PART_MIN_COUNT 24
 #define HELD_BACK 30.0f       // (closer to his eye point than this, with its hand not drawn: on his back)
 #define HELD_BACK_FAR 45.0f   // (the same with its hand drawn far from it)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
@@ -886,7 +888,8 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             k = i;
             int p = 0;
             while (p < 4 && part_count[i][p]) p++;
-            if (p < 4) {
+            // (tiny counts - 4, 8: flat quads, a glint - are ones a lot of the world shares: not remembered)
+            if (p < 4 && count >= HELD_PART_MIN_COUNT) {
                 part_count[i][p] = count;
                 static int log = -1;
                 if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
@@ -912,6 +915,12 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = true;
         memcpy(g_held_k, g_held[k].rel, sizeof g_held_k);
         return true;
+    } else if (g_held[k].frame == now) {
+        // Another draw with the item's own count this frame: the same item again (another pass: its exact block) or
+        // something else sharing the count - Skyloft's tower top shares the sword hilt's - left where it is.
+        bool same = true;
+        for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+        if (!same) return false;
     }
     if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
@@ -942,6 +951,12 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
             const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
             eye_d = sqrtf(ex * ex + ey * ey + ez * ez);
+        }
+        // The held item, drawn first this frame, follows on from where it was: another object sharing its count (the
+        // tower top) drawn first is left where it is, and leaves the held item's state alone for the real one.
+        if (side < 0 && was >= 0) {
+            const float cx = m[3] - g_held[k].block[3], cy = m[7] - g_held[k].block[7], cz = m[11] - g_held[k].block[11];
+            if (cx * cx + cy * cy + cz * cz > HELD_CONTINUITY * HELD_CONTINUITY) return false;
         }
         if (side < 0 && was >= 0 && d2s[was] >= 0 && d2s[was] < HELD_KEEP * HELD_KEEP) side = was;
         // Once in a hand it stays on that controller, with the offset it had (rigid on the hand's joint: it doesn't
