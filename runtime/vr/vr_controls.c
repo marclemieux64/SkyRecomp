@@ -249,6 +249,10 @@ static bool aim_pointer(SkyJoyConSensor *s) {
     if (!vr_aim_pointer(&u, &v)) return false;
     vr_pointer_direction(u, v, s->direction);
     for (int i = 0; i < 3; i++) s->accel[i] = -s->direction[i * 3 + 2];  // (gravity as it would be held: see above)
+    {   // (the Slingshot aimed with the controller: the game's pointer held still - no turning either)
+        extern bool vr_aim_slingshot(void);
+        if (vr_aim_slingshot()) for (int i = 0; i < 3; i++) s->gyro[i] = 0;
+    }
     static int logged;
     if (!logged++) LOG("[vr] aiming: the item aims where the right controller points\n");
     return true;

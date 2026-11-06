@@ -233,6 +233,14 @@ bool vr_aim_pointer(float *u_out, float *v_out) {
     static float bias[2];
     static uint64_t last;
     const uint64_t f = renderer_present_count();
+    // The Slingshot aimed with the controller (vr_slingshot.c): its shot goes where the hand points whatever the game
+    // aims at, so the game is held still - its pointer at the screen's centre - rather than turning its camera and
+    // its aim with the controller's motion (the controls felt like the gyro's, not the hand's place).
+    if (g_vr_hud_config.aim_with_controller && vr_aim_slingshot()) {
+        *u_out = 0.5f, *v_out = 0.5f;
+        bias[0] = bias[1] = 0;
+        return true;
+    }
     if (!g_vr_hud_config.aim_with_controller || g_center_frame == ~0ull || g_center_frame + 10 < f) {
         bias[0] = bias[1] = 0;  // (no reticle on screen: the next item starts afresh)
         return false;

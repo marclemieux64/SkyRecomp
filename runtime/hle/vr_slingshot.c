@@ -16,6 +16,7 @@
 //  - its launch point: 21 units below Link's eye point (main+0x1829a30) and 22 ahead of it.
 // Test (no headset): SKYRECOMP_SLINGSHOT_TEST_DIR="x y z" turns every shot to that world direction.
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -48,11 +49,88 @@ static GuestFn g_actor_execute;
 static float g_test_dir[3];
 static bool g_test_on;
 
-// The direction to launch along (world, unit): the right controller's, or the test's. False: leave the game's.
+// The flight as measured on the seeds themselves (each one followed while it flies): its time step per update (in
+// 1/30 s, the unit of its speed - it follows the frame rate), how far it flies straight, its gravity and its drag
+// per 1/30 s. Starting values from the headset-free run (60 updates a second); every shot refines them, so the
+// prediction follows the frame rate the game really runs at.
+static float g_dt = SEED_DT, g_straight = SEED_STRAIGHT_UPDATES * SEED_SPEED * SEED_DT, g_gravity = SEED_GRAVITY_ON;
+static float g_drag_unit = SEED_DRAG * SEED_DRAG;  // (x0.99 per 0.5: x0.9801 per 1/30 s)
+static struct { uint64_t a; float origin[3], p[3], v[3]; int updates; bool falling; } g_fly;
+
+static void follow_flight(uint64_t a) {
+    const float *o = (const float *)(uintptr_t)(a + SEED_ORIGIN), *p = (const float *)(uintptr_t)(a + SEED_POS);
+    const float *v = (const float *)(uintptr_t)(a + SEED_VEL), g = *(const float *)(uintptr_t)(a + SEED_GRAVITY);
+    if (g_fly.a != a || memcmp(g_fly.origin, o, sizeof g_fly.origin)) return;  // (not the shot being followed)
+    const float sx = p[0] - g_fly.p[0], sy = p[1] - g_fly.p[1], sz = p[2] - g_fly.p[2], step = sqrtf(sx * sx + sy * sy + sz * sz);
+    const float sp = sqrtf(g_fly.v[0] * g_fly.v[0] + g_fly.v[1] * g_fly.v[1] + g_fly.v[2] * g_fly.v[2]);
+    const float hv = sqrtf(v[0] * v[0] + v[2] * v[2]), hv0 = sqrtf(g_fly.v[0] * g_fly.v[0] + g_fly.v[2] * g_fly.v[2]);
+    if (!(step > 0) || g_fly.updates > 600) { g_fly.a = 0; return; }  // (it hit something, or is gone)
+    float dt = 0;
+    if (sp > 1) {
+        dt = step / sp;
+        if (dt > 0.05f && dt < 2.0f) g_dt += (dt - g_dt) * 0.5f;
+    }
+    if (g != 0 && !g_fly.falling) {  // (gravity on: how far it flew straight)
+        g_fly.falling = true;
+        const float dx = g_fly.p[0] - o[0], dy = g_fly.p[1] - o[1], dz = g_fly.p[2] - o[2];
+        const float d0 = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (d0 > 100 && d0 < 5000) g_straight += (d0 - g_straight) * 0.5f;
+        g_gravity = g;
+    } else if (g != 0 && hv0 > 1 && dt > 0.05f) {  // (falling: the drag, per 1/30 s)
+        const float r = hv / hv0;
+        if (r > 0.5f && r <= 1.0f) g_drag_unit += (powf(r, 1.0f / dt) - g_drag_unit) * 0.3f;
+    }
+    memcpy(g_fly.p, p, sizeof g_fly.p), memcpy(g_fly.v, v, sizeof g_fly.v);
+    g_fly.updates++;
+    static uint64_t logged;
+    if (getenv("SKYRECOMP_SLINGSHOT_LOG") && g_fly.updates % 4 == 0 && renderer_present_count() != logged)
+        logged = renderer_present_count(), LOG("[slingshot] flight: update %d, step %.1f (dt %.3f), gravity %.1f -> model dt %.3f, "
+                                               "straight %.0f, drag %.4f per 1/30 s\n", g_fly.updates, step, dt, g, g_dt,
+                                               g_straight, g_drag_unit);
+}
+
+// The aim held while firing. Pulling the trigger tilts the controller, and the seed leaves a moment after the press
+// (Link's draw - 0.4 s in the headset-free run): the hand had moved by then, and the shot went beside the marker.
+// So the direction from just before the trigger's pull (HOLD_BACK_NS) is held - for the marker and the shot - until
+// the trigger is let go and the seed has left (or HOLD_MAX_NS). vr_slingshot_input: the input thread, every frame.
+#define HOLD_BACK_NS 60000000ll
+#define HOLD_MAX_NS 1500000000ll
+static struct { float d[3]; int64_t t; } g_hist[32];
+static int g_hist_n;
+static float g_held_dir[3];
+static _Atomic bool g_holding;
+static int64_t g_hold_since;
+static bool g_launched_since_hold;
+void vr_slingshot_input(float trigger, int64_t now_ns) {
+    float o[3], d[3];
+    const bool aim = g_vr_hud_config.aim_with_controller && vr_running() && vr_rig_controller_aim(o, d);
+    if (aim) {  // (the recent directions)
+        memmove(&g_hist[1], &g_hist[0], sizeof g_hist[0] * 31);
+        memcpy(g_hist[0].d, d, sizeof d), g_hist[0].t = now_ns;
+        if (g_hist_n < 32) g_hist_n++;
+    }
+    if (!atomic_load(&g_holding)) {
+        if (trigger > 0.15f && g_hist_n) {  // (the pull begins: the direction from just before it)
+            int i = 0;
+            while (i < g_hist_n - 1 && g_hist[i].t > now_ns - HOLD_BACK_NS) i++;
+            memcpy(g_held_dir, g_hist[i].d, sizeof g_held_dir);
+            g_hold_since = now_ns, g_launched_since_hold = false;
+            atomic_store(&g_holding, true);
+        }
+    } else if ((trigger < 0.05f && g_launched_since_hold) || now_ns - g_hold_since > HOLD_MAX_NS ||
+               (trigger < 0.05f && now_ns - g_hold_since > HOLD_MAX_NS / 3)) {
+        atomic_store(&g_holding, false);
+    }
+}
+
+// The direction to launch along (world, unit): the right controller's (held while firing), or the test's. False:
+// leave the game's.
 static bool launch_dir(float d[3]) {
     if (g_test_on) { memcpy(d, g_test_dir, sizeof g_test_dir); return true; }
     float o[3];
-    return g_vr_hud_config.aim_with_controller && vr_running() && vr_rig_controller_aim(o, d);
+    if (!(g_vr_hud_config.aim_with_controller && vr_running() && vr_rig_controller_aim(o, d))) return false;
+    if (atomic_load(&g_holding)) memcpy(d, g_held_dir, sizeof g_held_dir);
+    return true;
 }
 
 static void actor_execute_hook(Cpu *c) {
@@ -64,12 +142,25 @@ static void actor_execute_hook(Cpu *c) {
     const float speed = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     static uint64_t aimed_at;  // (the seed last turned and its launch point: each shot once - the actor is reused)
     static float aimed_origin[3];
-    if (aimed_at == a && !memcmp(aimed_origin, o, sizeof aimed_origin)) return;
+    if (aimed_at == a && !memcmp(aimed_origin, o, sizeof aimed_origin)) { follow_flight(a); return; }
     if (!(speed > 1) || step > speed) return;  // (not flying, or past its first step: not this shot's launch)
     aimed_at = a, memcpy(aimed_origin, o, sizeof aimed_origin);
     float d[3];
     if (!launch_dir(d)) return;
     for (int k = 0; k < 3; k++) v[k] = d[k] * speed, p[k] = o[k] + d[k] * step;
+    g_launched_since_hold = true;  // (the held aim is let go with the trigger now)
+    {   // (followed from here: vr_slingshot_path's flight measured on it)
+        extern bool player_eye(float eye[3]);
+        g_fly.a = a, g_fly.updates = 0, g_fly.falling = false;
+        memcpy(g_fly.origin, o, sizeof g_fly.origin), memcpy(g_fly.p, p, sizeof g_fly.p), memcpy(g_fly.v, v, sizeof g_fly.v);
+        float eye[3];  // (where it starts from his eye point: the prediction's start)
+        if (player_eye(eye)) {
+            extern float g_sling_below, g_sling_ahead;
+            const float h = sqrtf(d[0] * d[0] + d[2] * d[2]);
+            g_sling_below = eye[1] - o[1];
+            if (h > 0.1f) g_sling_ahead = ((o[0] - eye[0]) * d[0] + (o[2] - eye[2]) * d[2]) / h;
+        }
+    }
     static int said;
     if (said++ < 3 || getenv("SKYRECOMP_SLINGSHOT_LOG"))
         LOG("[slingshot] seed launched along the controller: %.3f %.3f %.3f, speed %.1f (gravity %.1f)\n", d[0], d[1], d[2],
@@ -78,6 +169,7 @@ static void actor_execute_hook(Cpu *c) {
 
 // The seed's flight from where a shot now would start, along the controller: n points (world), one per update,
 // up to max_len units of path. Returns how many. False start (no direction / no eye point): 0.
+float g_sling_below = SEED_BELOW_EYE, g_sling_ahead = SEED_AHEAD_OF_EYE;  // (the last shot's start, from his eye point)
 int vr_slingshot_path(float (*pts)[3], int n, float max_len) {
     float d[3], eye[3];
     if (n < 2 || !launch_dir(d) || !player_eye(eye)) return 0;
@@ -85,17 +177,21 @@ int vr_slingshot_path(float (*pts)[3], int n, float max_len) {
     const float hl = sqrtf(h[0] * h[0] + h[1] * h[1]);
     if (hl > 1e-4f) h[0] /= hl, h[1] /= hl;
     else h[0] = h[1] = 0;
-    float p[3] = {eye[0] + h[0] * SEED_AHEAD_OF_EYE, eye[1] - SEED_BELOW_EYE, eye[2] + h[1] * SEED_AHEAD_OF_EYE};
+    float p[3] = {eye[0] + h[0] * g_sling_ahead, eye[1] - g_sling_below, eye[2] + h[1] * g_sling_ahead};
     float v[3] = {d[0] * SEED_SPEED, d[1] * SEED_SPEED, d[2] * SEED_SPEED};
-    float len = 0;
+    // (in steps of 1/30 s's half - fine enough for the marker - with the measured flight: straight for g_straight,
+    // then gravity and drag per unit of time)
+    const float dt = 0.5f, drag = powf(g_drag_unit, dt);
+    float len = 0, flown = 0;
     int k = 0;
     memcpy(pts[k++], p, sizeof p);
     for (int u = 0; k < n && len < max_len; u++) {
-        if (u >= SEED_STRAIGHT_UPDATES) {
-            v[1] += SEED_GRAVITY_ON * SEED_DT;
-            for (int i = 0; i < 3; i++) v[i] *= SEED_DRAG;
+        if (flown >= g_straight) {
+            v[1] += g_gravity * dt;
+            for (int i = 0; i < 3; i++) v[i] *= drag;
         }
-        for (int i = 0; i < 3; i++) p[i] += v[i] * SEED_DT;
+        flown += sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * dt;
+        for (int i = 0; i < 3; i++) p[i] += v[i] * dt;
         const float *q = pts[k - 1];
         len += sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
         memcpy(pts[k++], p, sizeof p);
