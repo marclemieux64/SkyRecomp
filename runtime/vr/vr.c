@@ -103,6 +103,8 @@ static VkDeviceMemory staging_memory;
 static XrSwapchain swapchain = XR_NULL_HANDLE;  // one image per frame, array layer = eye
 static VkFormat swapchain_format;
 static uint32_t eye_width, eye_height, image_count;
+// The headset's eye image: width / height (0 before the session) - exec.c: 2D drawn into the eyes keeps its shape
+float vr_eye_aspect(void) { return eye_height ? (float)eye_width / (float)eye_height : 0.0f; }
 static XrSwapchainImageVulkanKHR *images;
 static XrSwapchain view_fade_swapchain = XR_NULL_HANDLE;
 static XrSwapchainImageVulkanKHR *view_fade_images;
@@ -2207,6 +2209,7 @@ bool vr_record_hud_copy(void *command_buffer, void *hud_image, uint32_t w, uint3
 void vr_set_grip_poses(bool left_tracked, const float left[7], bool right_tracked, const float right[7]) {
     (void)left_tracked; (void)left; (void)right_tracked; (void)right;
 }
+float vr_eye_aspect(void) { return 0.0f; }
 bool vr_patch_scene_ubo(uint32_t eye, float out[28], const float *in, uint64_t size) {
     (void)eye; (void)out; (void)in; (void)size;
     return false;

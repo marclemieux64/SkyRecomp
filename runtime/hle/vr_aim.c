@@ -35,7 +35,7 @@ static float g_eye[2][16], g_game[16];  // eye k's camera (game camera space -> 
 static uint64_t g_eye_frame[2] = {~0ull, ~0ull};
 static float g_center[2];               // the reticle's centre on the game's screen (NDC), from its unrotated pieces
 static uint64_t g_center_frame = ~0ull;
-static struct { float w[NS][3], d[NS]; bool ok[NS]; int n; } g_probe[2];  // per probe slot (exec.c)
+static struct { float w[NS][3], d[NS]; bool ok[NS]; int n; float o[3], dir[3]; } g_probe[2];  // per probe slot (exec.c)
 static float g_P[3];                    // the end point, world
 static uint64_t g_P_frame = ~0ull;
 
@@ -114,6 +114,7 @@ int vr_aim_probe(int slot, float u[], float v[], int max, bool flip_y, bool minu
     // The game is then aimed at the point found (vr_aim_pointer): the reticle and the shot meet there.
     if (!(g_vr_hud_config.aim_with_controller && vr_rig_controller_aim(o, d)) && !aim_line(V, o, d)) return 0;
     int n = NS < max ? NS : max;
+    memcpy(g_probe[slot].o, o, sizeof o), memcpy(g_probe[slot].dir, d, sizeof d);
     for (int i = 0; i < n; i++) {
         float t = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
         float *w = g_probe[slot].w[i];
@@ -147,9 +148,25 @@ void vr_aim_result(int slot, const float scene[], int n) {
         if (s + 1e-6f < a) continue;         // (behind something nearer than the line here: not on the line)
         hit = i, frac = b > a ? (s - a) / (b - a) : 1;
     }
-    const float (*w)[3] = (const float (*)[3])g_probe[slot].w;
-    if (hit < 0) memcpy(g_P, w[n - 1], 12);
-    else for (int j = 0; j < 3; j++) g_P[j] = w[hit - 1][j] + (w[hit][j] - w[hit - 1][j]) * fminf(1, fmaxf(0, frac));
+    // The distance along the line, steadied: the end point flipped between a surface a few hundred units off and
+    // "nothing hit" (the range's end) from one probe to the next, and every flip moved the reticle and re-aimed the
+    // game. After a hit, "nothing" counts from its third time in a row; small changes are eased, big ones (onto
+    // another surface) taken at once.
+    static float steady_t = -1;
+    static int misses;
+    float t_new;
+    if (hit < 0) {
+        t_new = steady_t > 0 && steady_t < RANGE_FAR * 0.99f && ++misses < 3 ? steady_t : RANGE_FAR;
+    } else {
+        misses = 0;
+        const float t0 = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)(hit - 1) / (float)(n - 1));
+        const float t1 = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)hit / (float)(n - 1));
+        t_new = t0 + (t1 - t0) * fminf(1, fmaxf(0, frac));
+    }
+    const float t = steady_t > 0 && t_new < steady_t * 1.5f && steady_t < t_new * 1.5f
+                        ? expf(logf(steady_t) * 0.6f + logf(t_new) * 0.4f) : t_new;
+    steady_t = t;
+    for (int j = 0; j < 3; j++) g_P[j] = g_probe[slot].o[j] + g_probe[slot].dir[j] * t;
     g_P_frame = renderer_present_count();
     static int log = -1;
     if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;

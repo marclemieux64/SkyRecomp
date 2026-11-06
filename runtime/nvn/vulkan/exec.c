@@ -2869,15 +2869,24 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // Guest memory keeps the game's mono camera.
     if (g_aim_draw && stage == 0 && idx == 0 && size >= 96) {  // VR aiming: a reticle piece, moved to the shot's end point
         // Each piece keeps its place around the reticle's centre (one centre per frame), the centre going to the end
-        // point in this eye's picture. The layout is the game's 16:9 screen; the eye's picture is nearly square, so
-        // the piece's height (and its offset from the centre) is scaled by their aspects' ratio - drawn as it was,
-        // the reticle came out about twice as tall as wide. (The pane's matrix: rows at 16 and 20, translation 19, 23.)
+        // point in this eye's picture. The layout is the game's 16:9 screen; the headset's eye image is nearly square,
+        // so the piece's height (and its offset from the centre) is scaled by their aspects' ratio - drawn as it was,
+        // the reticle came out about twice as tall as wide. (The headset's eye size, not this target's: the picture
+        // drawn here may be game-shaped and reshaped into the eye image later.) (The pane's matrix: rows at 16 and
+        // 20, translation 19, 23.)
         extern bool vr_aim_target(int eye, float target[2], float centre[2]);
+        extern float vr_eye_aspect(void);
         const float *u = (const float *)(uintptr_t)r.addr;
-        NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+        const float eye_aspect = vr_eye_aspect();
         float t[2], c[2];
-        if (rt && rt->height && fabsf(u[0]) > 1e-8f && fabsf(u[5]) > 1e-8f && vr_aim_target((int)vk_vr_eye(), t, c)) {
-            const float layout_aspect = fabsf(u[5] / u[0]), eye_aspect = (float)rt->width / (float)rt->height;
+        if (eye_aspect > 0 && fabsf(u[0]) > 1e-8f && fabsf(u[5]) > 1e-8f && vr_aim_target((int)vk_vr_eye(), t, c)) {
+            const float layout_aspect = fabsf(u[5] / u[0]);
+            {
+                static int said;
+                NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+                if (said++ < 2) LOG("[aim] reticle in the eyes: layout aspect %.3f, eye image %.3f, this target %ux%u\n",
+                                    layout_aspect, eye_aspect, rt ? rt->width : 0, rt ? rt->height : 0);
+            }
             const float sy = eye_aspect / layout_aspect;
             VkSpan s = vk_transient_copy(u, size, 256);
             float *o = (float *)s.ptr;
