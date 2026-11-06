@@ -436,6 +436,8 @@ static bool planar_reflection(const float v[12], const float g[12]) {
 }
 
 static int g_hand_draw = -1;
+static bool g_skin_on;  // (vr_rig_held_skin_draw: the draw being recorded is the Slingshot, moved with its hand)
+static float g_skin_T[12];
 static uint64_t g_hand_count_cur;  // (the hand draw's index count: which pose's mesh)
 static bool hand_block(const VrRigAnchor *a, const float reference[7], const float game[12], float out[12]);
 static void update_controller_poses(const VrRigAnchor *a, const float reference[7]);
@@ -545,7 +547,14 @@ static bool eye_camera(const float mono[28], const float reference[7], const flo
             fprintf(stderr, "\n");
         }
     }
-    if (g_hand_draw >= 0 && hand_block(&a, reference, game, hand_mono + 16)) {
+    if (g_skin_on) {  // (the Slingshot: its view block moved with its hand too - its bones are, in exec.c)
+        memcpy(hand_mono, mono, 16 * sizeof(float));
+        a_mul(g_skin_T, mono + 16, hand_mono + 16);
+        memcpy(g_hand_orig, mono + 16, sizeof g_hand_orig);
+        memcpy(g_hand_repl, hand_mono + 16, sizeof g_hand_repl);
+        g_hand_blocks = true;
+        mono = hand_mono;
+    } else if (g_hand_draw >= 0 && hand_block(&a, reference, game, hand_mono + 16)) {
         memcpy(hand_mono, mono, 16 * sizeof(float));
         memcpy(g_hand_orig, mono + 16, sizeof g_hand_orig);
         memcpy(g_hand_repl, hand_mono + 16, sizeof g_hand_repl);
@@ -782,11 +791,13 @@ static void held_measure(int k) {    // (the item and its hand drawn this frame:
 }
 
 // (g_hand_orig, g_hand_repl: this hand draw's game view block and the one replacing it)
-void vr_rig_set_hand_draw(int side) { g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = false; }
+void vr_rig_set_hand_draw(int side) {
+    g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = false, g_skin_on = false;
+}
 // (exec.c) This hand draw's game view block and its replacement: other uniform blocks holding the same matrix (the
 // shader's normals, for its lighting) get the replacement too.
 bool vr_rig_hand_blocks(float orig[12], float repl[12]) {
-    if (!g_hand_blocks || (g_hand_draw < 0 && !g_door_blocks)) return false;
+    if (!g_hand_blocks || (g_hand_draw < 0 && !g_door_blocks && !g_skin_on)) return false;
     memcpy(orig, g_hand_orig, sizeof g_hand_orig);
     memcpy(repl, g_hand_repl, sizeof g_hand_repl);
     return true;
@@ -888,6 +899,85 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     for (int k = 0; k < HELD_KINDS; k++)  // (an item drawn before its hand this frame: measured now, used next frame)
         if (g_held[k].frame == now && g_held[k].side == side) held_measure(k);
     return side;
+}
+
+// ---- the Slingshot in his hand. Unlike the sword and shield it is a skinned draw (index count 762, 4 bones; measured:
+// its first bone 10.9 units from his right hand, the game holding it there): its bones are in game-camera space, and
+// each eye's projection carries the eye's own offset (Pe Ve Vg^-1), so moving its view block - as the hands are moved -
+// would not move it. Instead its bones (and view block, for its lighting) are taken along with the hand holding it:
+// T = Vg C K Hg^-1, the hand's game block Hg (camera space) to where the hand is drawn - the controller's grip C (world,
+// vr_rig_controller_pose) and the hand mesh in it K (hand_k) - so it keeps the game's own grip.
+static void hand_k(int side, float k[12]);
+#define SLINGSHOT_COUNT 762
+#define SKIN_REACH 40.0f
+bool vr_rig_skin_transform(float T[12]) {  // (exec.c: its bones' slot)
+    if (!g_skin_on) return false;
+    memcpy(T, g_skin_T, sizeof g_skin_T);
+    return true;
+}
+bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes, uint64_t count) {
+    static int off = -1;
+    if (off < 0) off = getenv("SKYRECOMP_VR_NO_HELD") != NULL;
+    g_skin_on = false;
+    if (off || count != SLINGSHOT_COUNT || !slot0 || !bones || bone_bytes < 48 || bone_bytes / 48 > 16 || !hands_on() ||
+        !g_rig.have_game_view || !sky_vr_is_scene_projection(slot0, size0))
+        return false;
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    int side = -1;
+    float best = SKIN_REACH * SKIN_REACH;
+    for (int s = 0; s < 2; s++) {
+        if (!g_hand_game_frame[s] || g_hand_game_frame[s] + 2 < now || !g_grip_ok[s]) continue;
+        const float *h = g_hand_game[s];
+        const float dx = bones[3] - h[3], dy = bones[7] - h[7], dz = bones[11] - h[11], d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best) best = d2, side = s;
+    }
+    float C[12], K[12], hi[12], ck[12], vck[12];
+    if (side < 0 || g_scripted || !vr_rig_controller_pose(side, C) || !a_inverse(g_hand_game[side], hi)) return false;
+    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    hand_k(side, K);
+    a_mul(C, K, ck);
+    a_mul(g_rig.game_view, ck, vck);
+    a_mul(vck, hi, g_skin_T);
+    g_skin_on = true;
+    static int said;
+    if (!said++) fprintf(stderr, "[vr] first person: the Slingshot is in the %s hand on its controller\n", side ? "right" : "left");
+    return true;
+}
+
+// (RE, exec.c: each skinned draw, eye 0; SKYRECOMP_VR_HAND_LOG=1) Skinned draws with a small bone palette (held items:
+// the Slingshot's has 5) near one of his hands: each kind once - its index count, palette size, how far its first
+// bone and its view block are from each hand (camera space, as the hands' blocks), its first bone and its view block.
+void vr_rig_skinned_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes, uint64_t count) {
+    static int log = -1;
+    if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+    if (!log || !slot0 || !bones || !hands_on() || !sky_vr_is_scene_projection(slot0, size0)) return;
+    const uint64_t nb = bone_bytes / 48;
+    if (nb < 1 || nb > 16) return;
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    float db[2] = {-1, -1}, dv[2] = {-1, -1};
+    bool near = false;
+    for (int s = 0; s < 2; s++) {
+        if (!g_hand_game_frame[s] || g_hand_game_frame[s] + 2 < now) continue;
+        const float *h = g_hand_game[s];
+        const float bx = bones[3] - h[3], by = bones[7] - h[7], bz = bones[11] - h[11];
+        const float vx = slot0[19] - h[3], vy = slot0[23] - h[7], vz = slot0[27] - h[11];
+        db[s] = sqrtf(bx * bx + by * by + bz * bz), dv[s] = sqrtf(vx * vx + vy * vy + vz * vz);
+        near |= db[s] < 80 || dv[s] < 80;
+    }
+    if (!near) return;
+    static struct { uint64_t count, nb; } seen[48];
+    static int ns;
+    for (int i = 0; i < ns; i++) if (seen[i].count == count && seen[i].nb == nb) return;
+    if (ns < 48) seen[ns].count = count, seen[ns++].nb = nb;
+    const float *v = slot0 + 16;
+    fprintf(stderr, "[skin-log] frame %llu count %llu bones %llu: first bone %.1f / %.1f from the hands, view block %.1f / %.1f\n"
+                    "[skin-log]   bone0 %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f\n"
+                    "[skin-log]   view  %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f\n",
+            (unsigned long long)now, (unsigned long long)count, (unsigned long long)nb, db[0], db[1], dv[0], dv[1],
+            bones[0], bones[1], bones[2], bones[3], bones[4], bones[5], bones[6], bones[7], bones[8], bones[9], bones[10], bones[11],
+            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
 }
 
 // (exec.c, a rigid draw that isn't a hand) The sword or shield in one of his hands: drawn with that hand, on its

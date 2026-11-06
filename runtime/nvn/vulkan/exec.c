@@ -2805,6 +2805,7 @@ static NvnTexture *g_aim_depth;
 static uint64_t g_aim_main_frame[2] = {~0ull, ~0ull};
 static uint32_t g_aim_main_w[2];
 static float g_aim_vp[4];  // (eye 0's main view: its viewport, game units of its depth target)
+static int g_skin_bone_idx = -1;  // (the draw being set up is the Slingshot: its bones' uniform slot - vr_rig.c)
 static bool aim_main_target(int eye) {
     NvnTexture *t = st.rt.depth;
     if (!t || eye < 0 || eye > 1) return false;
@@ -2952,6 +2953,24 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 memcpy(patched.ptr, camera, sizeof camera);
             }
             return ubo_span(patched, size);
+        }
+    }
+    if (stage == 0 && idx == g_skin_bone_idx && size >= 48) {  // (the Slingshot's bones: moved with its hand - vr_rig.c)
+        extern bool vr_rig_skin_transform(float T[12]);
+        float T[12];
+        if (vr_rig_skin_transform(T)) {
+            VkSpan s = vk_transient_copy((const void *)(uintptr_t)r.addr, size, 256);
+            float *b = s.ptr;
+            const uint64_t nb = (r.size < size ? r.size : size) / 48;
+            for (uint64_t i = 0; i < nb; i++) {
+                float o[12];
+                for (int row = 0; row < 3; row++)
+                    for (int col = 0; col < 4; col++)
+                        o[row * 4 + col] = T[row * 4] * b[i * 12 + col] + T[row * 4 + 1] * b[i * 12 + 4 + col] +
+                                           T[row * 4 + 2] * b[i * 12 + 8 + col] + (col == 3 ? T[row * 4 + 3] : 0);
+                memcpy(b + i * 12, o, sizeof o);
+            }
+            return ubo_span(s, size);
         }
     }
     if (stage <= 1 && idx >= 1 && vr_stereo_active() && size >= 48 && size <= 0x2000) {
@@ -4752,6 +4771,20 @@ static void draw_(CmdRec *r, bool indexed) {
                     const int e = vk_vr_eye() ? 1 : 0;
                     n[e][0] += hand >= 0, n[e][1] += held, n[e][2] += r->x[2] == 1056;
                 }
+            }
+        }
+        g_skin_bone_idx = -1;
+        if (skinned && cam.addr) {  // (the Slingshot in his hand, moved with it - vr_rig.c; RE: SKYRECOMP_VR_HAND_LOG)
+            extern void vr_rig_skinned_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes, uint64_t count);
+            extern bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes,
+                                              uint64_t count);
+            for (int idx = 3; idx <= 5; idx++) {
+                if (!(pr->vi->cbuf_mask & (1u << (idx + 3))) || !st.ubuf[0][idx].addr) continue;
+                const float *bones = (const float *)(uintptr_t)st.ubuf[0][idx].addr;
+                if (!vk_vr_eye()) vr_rig_skinned_note((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]);
+                if (vr_rig_held_skin_draw((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]))
+                    g_skin_bone_idx = idx;
+                break;
             }
         }
         if (!skinned && cam.addr) {  // (the door held open in VR: its leaf turned - vr_rig.c)
