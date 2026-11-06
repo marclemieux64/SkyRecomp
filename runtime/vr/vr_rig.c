@@ -689,10 +689,30 @@ bool vr_rig_game_hand(int side, float w[3]) {
     return true;
 }
 
+// A controller's pose can drop out for a few frames (held close to the face - the shield raised - the headset's
+// cameras lose it): its hand, and what it holds, went back to the game's pose for those frames. The last good pose is
+// kept for GRIP_HOLD frames (SKYRECOMP_VR_HAND_LOG logs each dropout).
+#define GRIP_HOLD 60
 void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const float right[7]) {
-    g_grip_ok[0] = left_ok && left, g_grip_ok[1] = right_ok && right;
-    if (g_grip_ok[0]) memcpy(g_grip[0], left, sizeof g_grip[0]);
-    if (g_grip_ok[1]) memcpy(g_grip[1], right, sizeof g_grip[1]);
+    extern uint64_t renderer_present_count(void);
+    static uint64_t good[2];
+    static int lost[2];
+    static int log = -1;
+    if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+    const uint64_t f = renderer_present_count() + 1;
+    const bool ok[2] = {left_ok && left, right_ok && right};
+    const float *pose[2] = {left, right};
+    for (int s = 0; s < 2; s++) {
+        if (ok[s]) {
+            if (log && lost[s]) fprintf(stderr, "[hand-log] frame %llu controller %d pose back after %d frames\n", (unsigned long long)f, s, lost[s]);
+            memcpy(g_grip[s], pose[s], sizeof g_grip[s]);
+            good[s] = f, lost[s] = 0, g_grip_ok[s] = true;
+        } else {
+            if (log && !lost[s]) fprintf(stderr, "[hand-log] frame %llu controller %d pose lost\n", (unsigned long long)f, s);
+            lost[s]++;
+            g_grip_ok[s] = good[s] && good[s] + GRIP_HOLD >= f;  // (the last good pose, for a moment)
+        }
+    }
 }
 // ---- 1st person: what his hands hold (the sword, the shield). They're rigid draws of their own, posed by the game
 // on his hand's joint; placed with the hand, they'd stay where the game animates them while the hand drawn goes to
@@ -702,6 +722,15 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 // holding it, a readied shield 10.8 from its hand; sheathed, on his back, both are 50+ units from either hand).
 // SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
 #define HELD_REACH 25.0f
+#define HELD_REACH_SHIELD 40.0f
+#define HELD_NOT_HIS 300.0f   // (an item's model this far from his eye point is someone else's)
+#define HELD_KEEP 70.0f
+#define HELD_PART_NEAR 40.0f
+#define HELD_MEMORY 60        // (frames)
+#define HELD_CONTINUITY 80.0f // (how far the held item may have moved since it was last drawn)
+#define HELD_PART_MIN_COUNT 24
+#define HELD_BACK 30.0f       // (closer to his eye point than this, with its hand not drawn: on his back)
+#define HELD_BACK_FAR 45.0f   // (the same with its hand drawn far from it)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
 enum { HELD_KINDS = sizeof HELD_COUNTS / sizeof HELD_COUNTS[0] };
 static float g_hand_game[2][12];     // each hand's game view block (game camera x its model) and its frame
@@ -745,6 +774,37 @@ static bool hands_on(void) {
 
 // Which hand a rigid draw is (-1: not a hand). slot0 + 16: its view (game camera x its model); e: his eye, same space.
 static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t vb_size, const float e[3]) {
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - rigid draws turned down near where a hand just was: each kind once)
+        static int log = -1;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        const bool kind_ok = vb_size == HAND_MESH_VB && count >= 600 && count <= 900;
+        const float ex = slot0[19] - e[0], ey = slot0[23] - e[1], ez = slot0[27] - e[2];
+        const float eye_d = sqrtf(ex * ex + ey * ey + ez * ez);
+        if (log && (!kind_ok || eye_d > HAND_REACH)) {
+            extern uint64_t renderer_present_count(void);
+            const uint64_t f = renderer_present_count() + 1;
+            const float *v = g_rig.game_view;
+            float w[3];
+            for (int i = 0; i < 3; i++)
+                w[i] = v[0 * 4 + i] * (slot0[19] - v[3]) + v[1 * 4 + i] * (slot0[23] - v[7]) + v[2 * 4 + i] * (slot0[27] - v[11]);
+            for (int s = 0; s < 2; s++) {
+                if (!g_hand_last_frame[s] || g_hand_last_frame[s] + 3 < f) continue;
+                const float a = w[0] - g_hand_last[s][0], b = w[1] - g_hand_last[s][1], c = w[2] - g_hand_last[s][2];
+                const float d = sqrtf(a * a + b * b + c * c);
+                if (d > 40) continue;
+                static struct { uint64_t count, size; } seen[48];
+                static int nseen;
+                bool known = false;
+                for (int i = 0; i < nseen; i++) known |= seen[i].count == count && seen[i].size == vb_size;
+                if (known || nseen >= 48) break;
+                seen[nseen].count = count, seen[nseen++].size = vb_size;
+                fprintf(stderr, "[hand-log] frame %llu turned down near hand %d (%.1f away): count %llu vb size %llu, %.1f from the eye%s\n",
+                        (unsigned long long)f, s, d, (unsigned long long)count, (unsigned long long)vb_size, eye_d,
+                        kind_ok ? " (too far)" : "");
+                break;
+            }
+        }
+    }
     if (vb_size != HAND_MESH_VB || count < 600 || count > 900) return -1;
     const float dx = slot0[19] - e[0], dy = slot0[23] - e[1], dz = slot0[27] - e[2];
     if (dx * dx + dy * dy + dz * dz > HAND_REACH * HAND_REACH) return -1;
@@ -760,7 +820,10 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     if (side < 0) {
         // A new mesh (taking out an item or pulling a trigger swaps in another pose's mesh): the side not drawn yet
         // this frame, else the one whose last position is nearer; with neither known yet, the side of the game
-        // camera it hangs on (measured: the mesh first seen on the camera's left is his right hand).
+        // camera it hangs on: in 1st person the camera faces his way, so the camera's left is his left hand.
+        // (Measured with SKYRECOMP_VR_HAND_LOG in Skyloft: the mesh holding the sword - his right hand - hangs on the
+        // camera's right; the other ~30 units to its left. Taken the other way round, each controller showed the
+        // other hand - mirrored - and the sword went to the left controller. SKYRECOMP_VR_HAND_SWAP=1: the old way.)
         const bool known[2] = {g_hand_last_frame[0] + 30 >= now && g_hand_last_frame[0], g_hand_last_frame[1] + 30 >= now && g_hand_last_frame[1]};
         const bool drawn[2] = {g_hand_last_frame[0] == now, g_hand_last_frame[1] == now};
         if (known[0] && known[1]) {
@@ -770,7 +833,11 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
                 d2[h] = a0 * a0 + a1 * a1 + a2 * a2;
             }
             side = drawn[0] != drawn[1] ? (drawn[0] ? 1 : 0) : d2[0] <= d2[1] ? 0 : 1;
-        } else side = dx < 0 ? 1 : 0;
+        } else {
+            static int swap = -1;
+            if (swap < 0) swap = getenv("SKYRECOMP_VR_HAND_SWAP") != NULL;
+            side = (dx < 0) == !swap ? 0 : 1;
+        }
         static int next;
         g_hand_mesh[next] = (__typeof__(g_hand_mesh[0])){vb, count, side};
         next = (next + 1) % 8;
@@ -780,6 +847,16 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     g_hand_count_cur = count;
     memcpy(g_hand_game[side], slot0 + 16, sizeof g_hand_game[side]);
     g_hand_game_frame[side] = now;
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1)
+        static int log = -1;
+        static uint64_t last[2];
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        if (log && now >= last[side] + 60) {
+            last[side] = now;
+            fprintf(stderr, "[hand-log] frame %llu side %d count %llu vb %llx det %.3f cam x %.1f\n", (unsigned long long)now,
+                    side, (unsigned long long)count, (unsigned long long)vb, det3(slot0 + 16), dx);
+        }
+    }
     for (int k = 0; k < HELD_KINDS; k++)  // (an item drawn before its hand this frame: measured now, used next frame)
         if (g_held[k].frame == now && g_held[k].side == side) held_measure(k);
     return side;
@@ -794,28 +871,133 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     extern uint64_t renderer_present_count(void);
     const uint64_t now = renderer_present_count() + 1;
     const float *m = slot0 + 16;
+    // Another part drawn on the held item's own joint (its exact block: the blade) goes with it. Such a part is known
+    // by its index count once seen after the item in a frame: drawn before it, the item's block of this frame isn't
+    // known yet - in the left eye; the right eye's replay comes after, so only that eye moved it.
+    static uint64_t part_count[HELD_KINDS][4];
     int k = -1;
-    for (int i = 0; i < HELD_KINDS; i++)
+    bool part = false;  // (a known part, not the item itself)
+    for (int i = 0; i < HELD_KINDS; i++) {
         if (count == HELD_COUNTS[i]) k = i;
-    if (k < 0) {  // (another part drawn on the held item's own joint - its exact block - goes with it)
+        for (int p = 0; p < 4 && k < 0; p++) if (part_count[i][p] && count == part_count[i][p]) k = i, part = true;
+    }
+    if (k >= 0 && !part && g_rig.have_game_view) {
+        // Not his: another object with the item's model far from Link (a shield 1760 units off, drawn before his own
+        // every frame, took the item's place in the frame and his own shield was turned down as a second copy)
+        const float *v = g_rig.game_view;
+        float e[3];
+        for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+        const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
+        if (ex * ex + ey * ey + ez * ez > HELD_NOT_HIS * HELD_NOT_HIS) return false;
+    }
+    if (k < 0) {
         for (int i = 0; i < HELD_KINDS && k < 0; i++) {
             if (g_held[i].frame != now || g_held[i].side < 0) continue;
             bool same = true;
             for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[i].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
-            if (same) k = i;
+            if (!same) continue;
+            k = i;
+            int p = 0;
+            while (p < 4 && part_count[i][p]) p++;
+            // (tiny counts - 4, 8: flat quads, a glint - are ones a lot of the world shares: not remembered)
+            if (p < 4 && count >= HELD_PART_MIN_COUNT) {
+                part_count[i][p] = count;
+                static int log = -1;
+                if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+                if (log) fprintf(stderr, "[held-log] kind %d: a part with index count %llu\n", i, (unsigned long long)count);
+            }
         }
         if (k < 0) return false;
-    } else if (g_held[k].frame != now) {
+    } else if (part && g_held[k].frame == now) {  // (a known part after the item: only on the item's own joint)
+        bool same = true;
+        for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+        if (!same) return false;
+    } else if (part) {
+        // A known part before the item this frame: its count may be one world objects share too, so it counts only
+        // drawn right where the item was last frame (a swing moves it less than HELD_PART_NEAR in a frame), and it
+        // takes the item's offset - the same joint - without touching the item's state. (Without this, world draws
+        // sharing the part's count went to the controller while a swing hid his hand: geometry vanished.)
+        const float dx = m[3] - g_held[k].block[3], dy = m[7] - g_held[k].block[7], dz = m[11] - g_held[k].block[11];
+        const int side = g_held[k].side;
+        if (side < 0 || !g_held[k].rel_frame || !g_held[k].frame || g_held[k].frame + 1 < now ||
+            dx * dx + dy * dy + dz * dz > HELD_PART_NEAR * HELD_PART_NEAR)
+            return false;
+        if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+        g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = true;
+        memcpy(g_held_k, g_held[k].rel, sizeof g_held_k);
+        return true;
+    } else if (g_held[k].frame == now) {
+        // Another draw with the item's own count this frame: the same item again (another pass: its exact block) or
+        // something else sharing the count - Skyloft's tower top shares the sword hilt's - left where it is.
+        bool same = true;
+        for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+        if (!same) return false;
+    }
+    if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
         // camera space: distances as in the world)
+        // The hand it was in last frame keeps it within HELD_KEEP: the item is often drawn before its hand, so it is
+        // compared with the hand's last frame, and in a swing the hand moves further than HELD_REACH in a frame (the
+        // sword went back to the game's swinging hand). Sheathed, on his back, it is 50+ units from either hand and
+        // the hand moves away from it.
+        // (the hand holding it is remembered across frames the item isn't drawn in - up to HELD_MEMORY: with only the
+        // last frame's, a raised shield missing a frame or two had to be taken again within HELD_REACH of his left
+        // hand, which the game draws 80-160 units from it then, and it went back to the game's pose)
+        const int was = g_held[k].side >= 0 && g_held[k].frame && g_held[k].frame + HELD_MEMORY >= now ? g_held[k].side : -1;
         int side = -1;
-        float best = HELD_REACH * HELD_REACH;
+        // (the shield sits further from the hand the game draws than the sword does: 25-31 units here, readied)
+        const float reach = k == 1 ? HELD_REACH_SHIELD : HELD_REACH;
+        float best = reach * reach, d2s[2] = {-1, -1};
         for (int s = 0; s < 2; s++) {
             if (!g_hand_game_frame[s] || g_hand_game_frame[s] + 1 < now) continue;
             const float dx = m[3] - g_hand_game[s][3], dy = m[7] - g_hand_game[s][7], dz = m[11] - g_hand_game[s][11];
             const float d2 = dx * dx + dy * dy + dz * dz;
+            d2s[s] = d2;
             if (d2 < best) best = d2, side = s;
         }
+        // Its distance from his eye point: on his back (sword sheathed, shield away) it sits close to it (the sheathed
+        // hilt ~20 units: vr_sword.c measured the blade's base 19-20 sheathed, 47-125 drawn).
+        float eye_d = -1;
+        if (g_rig.have_game_view) {
+            const float *v = g_rig.game_view;
+            float e[3];
+            for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+            const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
+            eye_d = sqrtf(ex * ex + ey * ey + ez * ez);
+        }
+        // The held item, drawn first this frame, follows on from where it was: another object sharing its count (the
+        // tower top) drawn first is left where it is, and leaves the held item's state alone for the real one.
+        if (side < 0 && was >= 0) {
+            const float cx = m[3] - g_held[k].block[3], cy = m[7] - g_held[k].block[7], cz = m[11] - g_held[k].block[11];
+            if (cx * cx + cy * cy + cz * cz > HELD_CONTINUITY * HELD_CONTINUITY) return false;
+        }
+        if (side < 0 && was >= 0 && d2s[was] >= 0 && d2s[was] < HELD_KEEP * HELD_KEEP) side = was;
+        // Once in a hand it stays on that controller, with the offset it had (rigid on the hand's joint: it doesn't
+        // change), until it is on his back. The game doesn't always draw the hand holding it near it: mid-swing the
+        // swinging arm, hand included, is part of his body (hidden in 1st person), and raising or bashing with the
+        // shield drew his left hand 80-160 units from it - both snapped the item back to the game's own pose. With its
+        // hand not drawn it is let go only within HELD_BACK of his eye point; with the hand drawn far, HELD_BACK_FAR.
+        if (side < 0 && was >= 0 && eye_d >= 0 && eye_d > (d2s[was] < 0 ? HELD_BACK : HELD_BACK_FAR)) side = was;
+        {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - a held item let go, and how far its hands were)
+            static int log = -1;
+            if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+            if (log && was >= 0 && side < 0 && !part)
+                fprintf(stderr, "[held-log] frame %llu kind %d let go: hands %.1f / %.1f away (drawn %llu / %llu), %.1f from the eye\n",
+                        (unsigned long long)now, k, d2s[0] >= 0 ? sqrtf(d2s[0]) : -1.0f, d2s[1] >= 0 ? sqrtf(d2s[1]) : -1.0f,
+                        (unsigned long long)g_hand_game_frame[0], (unsigned long long)g_hand_game_frame[1], eye_d);
+            if (log && was < 0 && side < 0 && !part && g_held[k].side >= 0)
+                fprintf(stderr, "[held-log] frame %llu kind %d let go after not being drawn since %llu, %.1f from the eye\n",
+                        (unsigned long long)now, k, (unsigned long long)g_held[k].frame, eye_d);
+            static uint64_t last_free[HELD_KINDS];
+            if (log && side < 0 && !part && now >= last_free[k] + 120)
+                last_free[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d not held: hands %.1f / %.1f away, %.1f from the eye\n",
+                                            (unsigned long long)now, k, d2s[0] >= 0 ? sqrtf(d2s[0]) : -1.0f,
+                                            d2s[1] >= 0 ? sqrtf(d2s[1]) : -1.0f, eye_d);
+            static uint64_t last_eye[HELD_KINDS];
+            if (log && side >= 0 && !part && now >= last_eye[k] + 60)
+                last_eye[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d held, %.1f from the eye\n", (unsigned long long)now, k, eye_d);
+        }
+        if (part && side < 0) return false;  // (a known part's count drawn elsewhere: leaves the item's state alone)
         memcpy(g_held[k].block, m, sizeof g_held[k].block);
         g_held[k].frame = now;
         if (side != g_held[k].side) g_held[k].rel_frame = 0;  // (another hand: its offset measured afresh)
@@ -823,8 +1005,16 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         held_measure(k);
     }
     const int side = g_held[k].side;
-    if (side < 0 || !g_held[k].rel_frame || g_held[k].rel_frame + 2 < now) return false;
-    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    // (the offset: measured whenever the item and its hand are drawn in one frame; kept while its hand isn't drawn -
+    // rel_frame goes back to 0 when it changes hands)
+    if (side < 0 || !g_held[k].rel_frame) return false;
+    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) {
+        static int log = -1;
+        static uint64_t last;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        if (log && now >= last + 120) last = now, fprintf(stderr, "[held-log] frame %llu kind %d left to the game: a door's handle\n", (unsigned long long)now, k);
+        return false;
+    }
     float rel[12] = {0};
     if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
     else {  // (a part on the item's joint: the same offset, its own block's relation to the item kept)
@@ -835,6 +1025,16 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     }
     g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = true;
     memcpy(g_held_k, rel, sizeof g_held_k);
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1)
+        static int log = -1;
+        static uint64_t last;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        if (log && now >= last + 60) {
+            last = now;
+            fprintf(stderr, "[held-log] frame %llu kind %d count %llu side %d det item %.3f rel %.3f hand %.3f\n",
+                    (unsigned long long)now, k, (unsigned long long)count, side, det3(m), det3(rel), det3(g_hand_game[side]));
+        }
+    }
     static int said;
     if (!said++) fprintf(stderr, "[vr] first person: Link's %s is on the %s controller\n", k ? "shield" : "sword", side ? "right" : "left");
     return true;
@@ -881,8 +1081,21 @@ int vr_rig_hand_side(const float *slot0, uint64_t size0, uint64_t count, uint64_
 // the projection stays the eye's, as for every draw). False: leave the draw as the game places it.
 static bool hand_block(const VrRigAnchor *a, const float reference[7], const float game[12], float out[12]) {
     const int side = g_hand_draw;
-    // (during a scripted move his hands stay where the game animates them: on the door's handle)
-    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || g_scripted) return false;
+    // (during a scripted move at a door his hands stay where the game animates them: on the door's handle. Only at a
+    // door: a big sword swing lunges his head that far from the eye point too, and the hands, the sword and the shield
+    // went back to the game's swinging pose for its frames)
+    extern bool door_at(void);
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - why a held item was left to the game, at most once a second)
+        static int log = -1;
+        static uint64_t last;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        extern uint64_t renderer_present_count(void);
+        const uint64_t f = renderer_present_count();
+        if (log && g_held_on && side >= 0 && side < 2 && f >= last + 120 && (!g_grip_ok[side] || (g_scripted && door_at())))
+            last = f, fprintf(stderr, "[held-log] frame %llu held item on %d left to the game: %s\n", (unsigned long long)f, side,
+                              !g_grip_ok[side] ? "controller pose lost" : "scripted move at a door");
+    }
+    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || (g_scripted && door_at())) return false;
 
     float rel[9], off[3], rc[9], c[12], k[12], ck[12];
     vr_rig_relative(reference, g_grip[side], vr_rig_units_per_metre(), rel, off);

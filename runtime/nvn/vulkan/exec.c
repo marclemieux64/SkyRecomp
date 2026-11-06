@@ -4676,7 +4676,24 @@ static void draw_(CmdRec *r, bool indexed) {
                                               st.vbuf[0].size);
             vr_rig_set_hand_draw(hand);
             // (the sword or shield he holds: with that hand - vr_rig.c)
-            if (hand < 0) vr_rig_held_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2]);
+            const bool held = hand < 0 && vr_rig_held_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2]);
+            {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1) per eye: hand and held draws placed, sword draws seen
+                static int log = -1;
+                static uint64_t frame, n[2][3];
+                if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+                if (log) {
+                    const uint64_t f = renderer_present_count();
+                    if (f >= frame + 60) {
+                        LOG("[eye-log] frame %llu eye0 hands %llu held %llu sword %llu | eye1 hands %llu held %llu sword %llu\n",
+                            (unsigned long long)f, (unsigned long long)n[0][0], (unsigned long long)n[0][1],
+                            (unsigned long long)n[0][2], (unsigned long long)n[1][0], (unsigned long long)n[1][1],
+                            (unsigned long long)n[1][2]);
+                        memset(n, 0, sizeof n), frame = f;
+                    }
+                    const int e = vk_vr_eye() ? 1 : 0;
+                    n[e][0] += hand >= 0, n[e][1] += held, n[e][2] += r->x[2] == 1056;
+                }
+            }
         }
         if (!skinned && cam.addr) {  // (the door held open in VR: its leaf turned - vr_rig.c)
             extern void vr_rig_door_draw(const float *slot0, uint64_t size0);
