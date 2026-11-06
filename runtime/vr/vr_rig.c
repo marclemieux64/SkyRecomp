@@ -703,6 +703,7 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 // SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
 #define HELD_REACH 25.0f
 #define HELD_KEEP 70.0f
+#define HELD_PART_NEAR 40.0f
 #define HELD_BACK 30.0f  // (closer to his eye point than this, with its hand not drawn: on his back)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
 enum { HELD_KINDS = sizeof HELD_COUNTS / sizeof HELD_COUNTS[0] };
@@ -863,13 +864,32 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             k = i;
             int p = 0;
             while (p < 4 && part_count[i][p]) p++;
-            if (p < 4) part_count[i][p] = count;
+            if (p < 4) {
+                part_count[i][p] = count;
+                static int log = -1;
+                if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+                if (log) fprintf(stderr, "[held-log] kind %d: a part with index count %llu\n", i, (unsigned long long)count);
+            }
         }
         if (k < 0) return false;
     } else if (part && g_held[k].frame == now) {  // (a known part after the item: only on the item's own joint)
         bool same = true;
         for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
         if (!same) return false;
+    } else if (part) {
+        // A known part before the item this frame: its count may be one world objects share too, so it counts only
+        // drawn right where the item was last frame (a swing moves it less than HELD_PART_NEAR in a frame), and it
+        // takes the item's offset - the same joint - without touching the item's state. (Without this, world draws
+        // sharing the part's count went to the controller while a swing hid his hand: geometry vanished.)
+        const float dx = m[3] - g_held[k].block[3], dy = m[7] - g_held[k].block[7], dz = m[11] - g_held[k].block[11];
+        const int side = g_held[k].side;
+        if (side < 0 || !g_held[k].rel_frame || !g_held[k].frame || g_held[k].frame + 1 < now ||
+            dx * dx + dy * dy + dz * dz > HELD_PART_NEAR * HELD_PART_NEAR)
+            return false;
+        if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+        g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = true;
+        memcpy(g_held_k, g_held[k].rel, sizeof g_held_k);
+        return true;
     }
     if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
