@@ -2804,6 +2804,7 @@ static bool g_aim_draw;
 static NvnTexture *g_aim_depth;
 static uint64_t g_aim_main_frame[2] = {~0ull, ~0ull};
 static uint32_t g_aim_main_w[2];
+static float g_aim_vp[4];  // (eye 0's main view: its viewport, game units of its depth target)
 static bool aim_main_target(int eye) {
     NvnTexture *t = st.rt.depth;
     if (!t || eye < 0 || eye > 1) return false;
@@ -2811,7 +2812,12 @@ static bool aim_main_target(int eye) {
     if (g_aim_main_frame[eye] != f) g_aim_main_w[eye] = 0, g_aim_main_frame[eye] = f;
     if (t->width < g_aim_main_w[eye]) return false;
     g_aim_main_w[eye] = t->width;
-    if (eye == 0) g_aim_depth = t;
+    if (eye == 0) {
+        g_aim_depth = t;
+        // (the part of it the scene is drawn into: the game's dynamic resolution draws a smaller frame into a corner
+        // of its targets - the probe's points are in that frame, not across the whole image)
+        memcpy(g_aim_vp, st.viewport[0], sizeof g_aim_vp);
+    }
     return true;
 }
 
@@ -2880,14 +2886,18 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         const float eye_aspect = vr_eye_aspect();
         float t[2], c[2];
         if (eye_aspect > 0 && fabsf(u[0]) > 1e-8f && fabsf(u[5]) > 1e-8f && vr_aim_target((int)vk_vr_eye(), t, c)) {
-            const float layout_aspect = fabsf(u[5] / u[0]);
+            // (the shape it has on the game's screen: its viewport's - 1920x1080 here, stretched whole into the eye
+            // image by vr_record_eye_copies. The layout's own units aren't square - 1.333 - so not those.)
+            NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+            const float screen_aspect = st.viewport[0][2] > 0 && st.viewport[0][3] > 0 ? st.viewport[0][2] / st.viewport[0][3]
+                                        : rt && rt->height ? (float)rt->width / (float)rt->height : 16.0f / 9.0f;
             {
                 static int said;
-                NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
-                if (said++ < 2) LOG("[aim] reticle in the eyes: layout aspect %.3f, eye image %.3f, this target %ux%u\n",
-                                    layout_aspect, eye_aspect, rt ? rt->width : 0, rt ? rt->height : 0);
+                if (said++ < 2) LOG("[aim] reticle in the eyes: screen aspect %.3f (viewport %.0fx%.0f), eye image %.3f, target %ux%u\n",
+                                    screen_aspect, st.viewport[0][2], st.viewport[0][3], eye_aspect, rt ? rt->width : 0,
+                                    rt ? rt->height : 0);
             }
-            const float sy = eye_aspect / layout_aspect;
+            const float sy = eye_aspect / screen_aspect;
             VkSpan s = vk_transient_copy(u, size, 256);
             float *o = (float *)s.ptr;
             const float px = u[0] * u[19] + u[3], py = u[5] * u[23] + u[7];  // (this piece's place, clip)
@@ -4339,8 +4349,21 @@ static void aim_probe(void) {
     const int n = vr_aim_probe(s, u, v, 64, nvn_window_origin() == 0, nvn_depth_mode() == 0);
     if (n <= 0) return;
     VkBufferImageCopy rg[64];
+    // (u, v are in the scene's viewport: to the image's pixels through it - game units of the target, scaled to the
+    // backend's size, which a render scale makes larger)
+    const float tw = g_aim_depth->width ? (float)g_aim_depth->width : 1, th = g_aim_depth->height ? (float)g_aim_depth->height : 1;
+    const bool vp_ok = g_aim_vp[2] > 0 && g_aim_vp[3] > 0;
+    const float vx = vp_ok ? g_aim_vp[0] : 0, vy = vp_ok ? g_aim_vp[1] : 0, vw = vp_ok ? g_aim_vp[2] : tw, vh = vp_ok ? g_aim_vp[3] : th;
+    {   // (when the scene's viewport changes: at most 20 times)
+        static int said;
+        static float last_vw, last_vh;
+        if ((vw != last_vw || vh != last_vh) && said++ < 20)
+            LOG("[aim] depth probe: target %ux%u (backend %ux%u), scene viewport %.0f %.0f %.0f %.0f\n", g_aim_depth->width,
+                g_aim_depth->height, b->width, b->height, vx, vy, vw, vh);
+        last_vw = vw, last_vh = vh;
+    }
     for (int i = 0; i < n; i++) {
-        int x = (int)(u[i] * b->width), y = (int)(v[i] * b->height);
+        int x = (int)((vx + u[i] * vw) / tw * b->width), y = (int)((vy + v[i] * vh) / th * b->height);
         x = x < 0 ? 0 : x >= (int)b->width ? (int)b->width - 1 : x;
         y = y < 0 ? 0 : y >= (int)b->height ? (int)b->height - 1 : y;
         rg[i] = (VkBufferImageCopy){.bufferOffset = (VkDeviceSize)(s * 512 + i * 4),
