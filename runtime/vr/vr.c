@@ -964,6 +964,7 @@ bool vr_record_eye_copies(void *command_buffer, void *left_image, void *right_im
     frame.acquired = true;
 
     VkCommandBuffer cb = command_buffer;
+    { extern void vr_marker_fill(VkCommandBuffer cb); vr_marker_fill(cb); }  // (the Slingshot's marker image, once)
     VkImage dst = images[frame.image].image;
     const bool freeze = freeze_next, frame_3d = frame_3d_next;
     freeze_next = frame_3d_next = false;
@@ -1426,6 +1427,10 @@ static void menu_destroy(void) {
     if (beam_swapchain && p_xrDestroySwapchain) p_xrDestroySwapchain(beam_swapchain);
     menu_swapchain = beam_swapchain = XR_NULL_HANDLE;
     menu_failed = beam_failed = beam_ready = false;
+    {   // (the Slingshot's marker, with them)
+        extern void vr_marker_destroy(void);
+        vr_marker_destroy();
+    }
     menu_acquired = menu_copied = false;
     g_menu_placed = false;
 }
@@ -1523,6 +1528,116 @@ static void beam_fill(VkCommandBuffer cb) {
     // (released at this frame's end, after the copy is recorded: the runtime waits for the submission)
     beam_failed = false;
     beam_ready = true;
+}
+
+// ================================================================== the Slingshot's marker
+// Where its seed will land (runtime/hle/vr_aim.c vr_aim_marker: its flight probed against the scene's depth, from
+// runtime/hle/vr_slingshot.c): a small ring in a quad layer of its own, facing the left eye, a steady size in view.
+// Its image is static: drawn once (vr_marker_fill, from the eye copies' command buffer).
+enum { MARKER_PX = 64 };
+#define MARKER_ANGLE 0.03f  // (its width / its distance: about 1.7 degrees)
+static XrSwapchain marker_swapchain;
+static XrSwapchainImageVulkanKHR marker_image;
+static VkBuffer marker_buffer;
+static VkDeviceMemory marker_buffer_memory;
+static bool marker_failed, marker_ready;
+void vr_marker_destroy(void) {
+    if (vk_device) {
+        if (marker_buffer) vkDestroyBuffer(vk_device, marker_buffer, NULL);
+        if (marker_buffer_memory) vkFreeMemory(vk_device, marker_buffer_memory, NULL);
+    }
+    marker_buffer = VK_NULL_HANDLE, marker_buffer_memory = VK_NULL_HANDLE;
+    if (marker_swapchain && p_xrDestroySwapchain) p_xrDestroySwapchain(marker_swapchain);
+    marker_swapchain = XR_NULL_HANDLE;
+    marker_failed = marker_ready = false;
+}
+
+void vr_marker_fill(VkCommandBuffer cb) {
+    if (marker_ready || marker_failed || !xr_session || swapchain_format == VK_FORMAT_UNDEFINED) return;
+    marker_failed = true;  // (until it all succeeds)
+    XrSwapchainCreateInfo ci = {.type = XR_TYPE_SWAPCHAIN_CREATE_INFO, .createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT,
+                                .usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | MIRROR_USAGE,
+                                .format = swapchain_format, .sampleCount = 1, .width = MARKER_PX, .height = MARKER_PX,
+                                .faceCount = 1, .arraySize = 1, .mipCount = 1};
+    uint32_t n = 1;
+    marker_image.type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
+    if (!xr_ok(p_xrCreateSwapchain(xr_session, &ci, &marker_swapchain), "xrCreateSwapchain (marker)") ||
+        !xr_ok(p_xrEnumerateSwapchainImages(marker_swapchain, 1, &n, (XrSwapchainImageBaseHeader *)&marker_image),
+               "xrEnumerateSwapchainImages (marker)"))
+        return;
+    const VkDeviceSize size = MARKER_PX * MARKER_PX * 4;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    if (vkCreateBuffer(vk_device, &bi, NULL, &marker_buffer) != VK_SUCCESS) return;
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(vk_device, marker_buffer, &mr);
+    const uint32_t type = memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = type};
+    uint8_t *px;
+    if (type == UINT32_MAX || vkAllocateMemory(vk_device, &ai, NULL, &marker_buffer_memory) != VK_SUCCESS ||
+        vkBindBufferMemory(vk_device, marker_buffer, marker_buffer_memory, 0) != VK_SUCCESS ||
+        vkMapMemory(vk_device, marker_buffer_memory, 0, size, 0, (void **)&px) != VK_SUCCESS)
+        return;
+    // A white ring with a dark edge either side and a dot in the middle, premultiplied, its edges smoothed.
+    const bool bgra = swapchain_format == VK_FORMAT_B8G8R8A8_SRGB || swapchain_format == VK_FORMAT_B8G8R8A8_UNORM;
+    for (int y = 0; y < MARKER_PX; y++)
+        for (int x = 0; x < MARKER_PX; x++) {
+            const float dx = (x + 0.5f) / MARKER_PX * 2 - 1, dy = (y + 0.5f) / MARKER_PX * 2 - 1, r = sqrtf(dx * dx + dy * dy);
+            const float px1 = 2.0f / MARKER_PX;  // (one pixel, in the -1..1 square)
+            #define BAND(lo, hi) fmaxf(0.0f, fminf(1.0f, fminf((r - (lo)) / px1 + 0.5f, ((hi) - r) / px1 + 0.5f)))
+            const float white = fmaxf(BAND(0.62f, 0.80f), BAND(-1.0f, 0.13f));
+            const float dark = fmaxf(BAND(0.52f, 0.92f), BAND(-1.0f, 0.22f));
+            #undef BAND
+            const float a = fmaxf(white, dark * 0.65f), c = white;  // (premultiplied: colour <= alpha)
+            uint8_t *p = px + (y * MARKER_PX + x) * 4;
+            const uint8_t v = (uint8_t)(c * 255), al = (uint8_t)(a * 255);
+            p[0] = bgra ? v : v, p[1] = v, p[2] = v, p[3] = al;
+        }
+    vkUnmapMemory(vk_device, marker_buffer_memory);
+    uint32_t index;
+    if (!xr_ok(p_xrAcquireSwapchainImage(marker_swapchain, &(XrSwapchainImageAcquireInfo){.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}, &index),
+               "xrAcquireSwapchainImage (marker)") ||
+        !xr_ok(p_xrWaitSwapchainImage(marker_swapchain, &(XrSwapchainImageWaitInfo){.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO,
+                                                                                      .timeout = XR_INFINITE_DURATION}),
+               "xrWaitSwapchainImage (marker)"))
+        return;
+    barrier_layers(cb, marker_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 1);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {MARKER_PX, MARKER_PX, 1}};
+    vkCmdCopyBufferToImage(cb, marker_buffer, marker_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    barrier_layers(cb, marker_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT, 1);
+    marker_failed = false;
+    marker_ready = true;  // (released at this frame's end: vr_frame_end)
+    LOG("[vr] Slingshot marker image ready\n");
+}
+
+// The marker's quad this frame: at the landing point, as eye 0 sees it - the game point in eye 0's own frame (the
+// rig's view of the world from it, vr_rig_cull_view, in game units) taken to the tracking space from eye 0's pose -
+// facing that eye, its size a steady angle. False: nothing to mark.
+static bool marker_pose(XrPosef *pose, float *size) {
+    extern bool vr_aim_marker(float p[3]);
+    extern bool vr_rig_cull_view(float view[12], float tangents[4]);
+    extern float vr_rig_units_per_metre(void);
+    float P[3], V[12], tan4[4];
+    if (!marker_ready || !vr_aim_marker(P) || !vr_rig_cull_view(V, tan4)) return false;
+    const float u = vr_rig_units_per_metre();
+    if (!(u > 0)) return false;
+    float e[3];  // (eye 0's frame: x right, y up, -z ahead; metres)
+    for (int r = 0; r < 3; r++) e[r] = (V[r * 4] * P[0] + V[r * 4 + 1] * P[1] + V[r * 4 + 2] * P[2] + V[r * 4 + 3]) / u;
+    const float dist = sqrtf(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+    if (!(e[2] < -0.05f) || !isfinite(dist)) return false;  // (behind the eye)
+    const XrPosef *eye = &frame.views[0].pose;
+    const XrQuaternionf q = eye->orientation;
+    const float x = q.x, y = q.y, z = q.z, w = q.w;
+    const float R[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+                        2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                        2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)};
+    const float lp[3] = {eye->position.x + R[0] * e[0] + R[1] * e[1] + R[2] * e[2],
+                         eye->position.y + R[3] * e[0] + R[4] * e[1] + R[5] * e[2],
+                         eye->position.z + R[6] * e[0] + R[7] * e[1] + R[8] * e[2]};
+    *pose = (XrPosef){q, {lp[0], lp[1], lp[2]}};
+    *size = dist * MARKER_ANGLE;
+    return true;
 }
 
 // (device.c, VR present, the menu up) The menu's image (ImGui, top-down, premultiplied; layout GENERAL) into the
@@ -1837,11 +1952,11 @@ static bool wrist_hud_glanced(int hand, XrPosef panel) {
 // same list (vr_mirror_layers) - so whatever the headset shows, the mirror shows, without per-layer mirror code.
 // Built from what was acquired and copied this frame; vr_frame_end then drops any whose release failed.
 static struct {
-    bool built, proj, hud, menu, beam, use_wrist, panel_in_eyes;
+    bool built, proj, hud, menu, beam, use_wrist, panel_in_eyes, marker;
     uint32_t wrist_count;
     XrCompositionLayerProjectionView pv[2];
     XrCompositionLayerProjection layer;
-    XrCompositionLayerQuad quad, quad_full, menu_quad, beam_quad, wrist[2], fade_layer;
+    XrCompositionLayerQuad quad, quad_full, menu_quad, beam_quad, wrist[2], fade_layer, marker_quad;
 } fl;
 // The wrist panels' element groups in the 1920x1080 2D layout (exec.c routes their draws to the wrist texture;
 // measured in Link's room): the status group - the hearts (two rows when he has many) - and the item group - the
@@ -1893,6 +2008,13 @@ static void build_layers(void) {
         .layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT, .eyeVisibility = XR_EYE_VISIBILITY_BOTH,
         .subImage = {.swapchain = beam_swapchain, .imageRect = {{0, 0}, {BEAM_W, BEAM_H}}, .imageArrayIndex = 0},
         .pose = fl.beam ? bp : (XrPosef){{0, 0, 0, 1}, {0, 0, 0}}, .size = {0.006f, beam_len}};
+    XrPosef mp;  // (the Slingshot's marker, where its seed will land)
+    float marker_size = 0;
+    fl.marker = !fl.menu && marker_pose(&mp, &marker_size);
+    fl.marker_quad = (XrCompositionLayerQuad){.type = XR_TYPE_COMPOSITION_LAYER_QUAD, .space = local_space,
+        .layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT, .eyeVisibility = XR_EYE_VISIBILITY_BOTH,
+        .subImage = {.swapchain = marker_swapchain, .imageRect = {{0, 0}, {MARKER_PX, MARKER_PX}}, .imageArrayIndex = 0},
+        .pose = fl.marker ? mp : (XrPosef){{0, 0, 0, 1}, {0, 0, 0}}, .size = {marker_size, marker_size}};
     fl.wrist_count = 0;
     extern bool player_eye(float eye[3]);
     const bool gameplay = player_eye(NULL);  // false on boot, title, loading, and file-select screens
@@ -2098,9 +2220,14 @@ void vr_frame_end(void) {
             beam_released = XR_SUCCEEDED(p_xrReleaseSwapchainImage(beam_swapchain, &(XrSwapchainImageReleaseInfo){.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}));
         if (!beam_ready) beam_released = false;
     }
+    {   static bool marker_released;  // (the static image: released once, after its fill was recorded)
+        if (marker_ready && !marker_released)
+            marker_released = XR_SUCCEEDED(p_xrReleaseSwapchainImage(marker_swapchain, &(XrSwapchainImageReleaseInfo){.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}));
+        if (!marker_ready) marker_released = false;
+    }
     const bool beam_ok = menu_ok && fl.beam;
     const bool use_wrist = hud_ok && fl.use_wrist && !fl.panel_in_eyes;
-    const XrCompositionLayerBaseHeader *layers[8];
+    const XrCompositionLayerBaseHeader *layers[10];
     uint32_t nlayers = 0;
     if (submit) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.layer;
     if (submit && hud_ok && !fl.panel_in_eyes) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.quad;
@@ -2108,6 +2235,7 @@ void vr_frame_end(void) {
         for (uint32_t i = 0; i < fl.wrist_count; i++) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.wrist[i];
     if (submit && menu_ok) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.menu_quad;
     if (submit && beam_ok) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.beam_quad;
+    if (submit && fl.marker) layers[nlayers++] = (const XrCompositionLayerBaseHeader *)&fl.marker_quad;
     const bool has_view_fade = submit && view_fade_acquired && view_fade_ready;
     static bool had_view_fade;
     if (had_view_fade && !has_view_fade && getenv("SKYRECOMP_VR_FADE_TRACE")) LOG("[vr-fade] compositor fade cleared\n");

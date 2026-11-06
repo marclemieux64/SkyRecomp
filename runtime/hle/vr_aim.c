@@ -35,7 +35,25 @@ static float g_eye[2][16], g_game[16];  // eye k's camera (game camera space -> 
 static uint64_t g_eye_frame[2] = {~0ull, ~0ull};
 static float g_center[2];               // the reticle's centre on the game's screen (NDC), from its unrotated pieces
 static uint64_t g_center_frame = ~0ull;
-static struct { float w[NS][3], d[NS]; bool ok[NS]; int n; float o[3], dir[3]; } g_probe[2];  // per probe slot (exec.c)
+static struct { float w[NS][3], d[NS], t[NS]; bool ok[NS]; int n; } g_probe[2];  // per probe slot (exec.c): points, depth, path length
+int vr_slingshot_path(float (*pts)[3], int n, float max_len);  // runtime/hle/vr_slingshot.c
+bool vr_slingshot_on(void);
+static uint64_t g_sling_frame = ~0ull;
+void vr_aim_slingshot_seen(void) { g_sling_frame = renderer_present_count(); }  // (exec.c: its reticle is on screen)
+// The Slingshot aimed with the controller: its seed's flight is probed (vr_slingshot_path) and the marker shown there
+bool vr_aim_slingshot(void) {
+    return g_sling_frame != ~0ull && g_sling_frame + 10 >= renderer_present_count() && vr_slingshot_on();
+}
+// (the probe's points as a path: the point at path length t, between its samples)
+static void probe_point(int slot, float t, float out[3]) {
+    const int n = g_probe[slot].n;
+    const float (*w)[3] = (const float (*)[3])g_probe[slot].w;
+    const float *ts = g_probe[slot].t;
+    int i = 1;
+    while (i < n - 1 && ts[i] < t) i++;
+    const float span = ts[i] - ts[i - 1], f = span > 0 ? fminf(1, fmaxf(0, (t - ts[i - 1]) / span)) : 1;
+    for (int j = 0; j < 3; j++) out[j] = w[i - 1][j] + (w[i][j] - w[i - 1][j]) * f;
+}
 static float g_P[3];                    // the end point, world
 static uint64_t g_P_frame = ~0ull;
 
@@ -112,13 +130,32 @@ int vr_aim_probe(int slot, float u[], float v[], int max, bool flip_y, bool minu
     // game camera's line starts wherever that camera is (in VR not at the eyes): its first stretch fell outside the
     // left eye's picture, so where it went behind a surface there was missed ("nothing hit", the reticle far off).
     // The game is then aimed at the point found (vr_aim_pointer): the reticle and the shot meet there.
-    if (!(g_vr_hud_config.aim_with_controller && vr_rig_controller_aim(o, d)) && !aim_line(V, o, d)) return 0;
+    // The Slingshot (vr_slingshot.c): along its seed's flight from where it would start, falling after a while.
+    static float path[256][3], cum[256];
+    int np = vr_aim_slingshot() ? vr_slingshot_path(path, 256, RANGE_FAR) : 0;
+    if (np >= 2) {
+        cum[0] = 0;
+        for (int i = 1; i < np; i++) {
+            const float dx = path[i][0] - path[i - 1][0], dy = path[i][1] - path[i - 1][1], dz = path[i][2] - path[i - 1][2];
+            cum[i] = cum[i - 1] + sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+    } else if (!(g_vr_hud_config.aim_with_controller && vr_rig_controller_aim(o, d)) && !aim_line(V, o, d)) {
+        return 0;
+    }
+    const float far = np >= 2 ? fminf(RANGE_FAR, cum[np - 1]) : RANGE_FAR;
     int n = NS < max ? NS : max;
-    memcpy(g_probe[slot].o, o, sizeof o), memcpy(g_probe[slot].dir, d, sizeof d);
     for (int i = 0; i < n; i++) {
-        float t = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
+        float t = RANGE_NEAR * powf(far / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
         float *w = g_probe[slot].w[i];
-        for (int j = 0; j < 3; j++) w[j] = o[j] + d[j] * t;
+        g_probe[slot].t[i] = t;
+        if (np >= 2) {  // (the flight's point at path length t)
+            int s = 1;
+            while (s < np - 1 && cum[s] < t) s++;
+            const float span = cum[s] - cum[s - 1], f = span > 0 ? fminf(1, fmaxf(0, (t - cum[s - 1]) / span)) : 1;
+            for (int j = 0; j < 3; j++) w[j] = path[s - 1][j] + (path[s][j] - path[s - 1][j]) * f;
+        } else {
+            for (int j = 0; j < 3; j++) w[j] = o[j] + d[j] * t;
+        }
         to_cam(V, w, c);
         bool ok = to_clip(g_eye[0], c, k);
         float x = ok ? k[0] / k[3] : 0, y = ok ? k[1] / k[3] : 0, z = ok ? k[2] / k[3] : 0;
@@ -155,18 +192,18 @@ void vr_aim_result(int slot, const float scene[], int n) {
     static float steady_t = -1;
     static int misses;
     float t_new;
+    const float t_end = g_probe[slot].t[n - 1];  // (the path's end: the range, or where the seed's flight ends)
     if (hit < 0) {
-        t_new = steady_t > 0 && steady_t < RANGE_FAR * 0.99f && ++misses < 3 ? steady_t : RANGE_FAR;
+        t_new = steady_t > 0 && steady_t < t_end * 0.99f && ++misses < 3 ? steady_t : t_end;
     } else {
         misses = 0;
-        const float t0 = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)(hit - 1) / (float)(n - 1));
-        const float t1 = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)hit / (float)(n - 1));
+        const float t0 = g_probe[slot].t[hit - 1], t1 = g_probe[slot].t[hit];
         t_new = t0 + (t1 - t0) * fminf(1, fmaxf(0, frac));
     }
     const float t = steady_t > 0 && t_new < steady_t * 1.5f && steady_t < t_new * 1.5f
                         ? expf(logf(steady_t) * 0.6f + logf(t_new) * 0.4f) : t_new;
     steady_t = t;
-    for (int j = 0; j < 3; j++) g_P[j] = g_probe[slot].o[j] + g_probe[slot].dir[j] * t;
+    probe_point(slot, fminf(t, t_end), g_P);
     g_P_frame = renderer_present_count();
     static int log = -1;
     if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
@@ -227,6 +264,14 @@ bool vr_aim_pointer(float *u_out, float *v_out) {
     if (log && f >= logged + 60)
         logged = f, LOG("[aim] controller: wants %.3f %.3f, reticle at %.3f %.3f, correction %.3f %.3f\n", want[0], want[1],
                         now[0], now[1], bias[0], bias[1]);
+    return true;
+}
+
+// (runtime/vr/vr.c, each headset frame) Where the Slingshot's seed will land (world), for its marker. False: not
+// aiming the Slingshot with the controller, or no landing point yet.
+bool vr_aim_marker(float p[3]) {
+    if (!vr_aim_slingshot() || g_P_frame == ~0ull || g_P_frame + 10 < renderer_present_count()) return false;
+    memcpy(p, g_P, sizeof g_P);
     return true;
 }
 

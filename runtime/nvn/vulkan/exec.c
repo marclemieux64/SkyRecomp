@@ -4381,12 +4381,14 @@ static void aim_probe(void) {
 // (hud_route) An aiming item's reticle piece in a frame with the 3D scene: true when it's drawn in each eye's own
 // picture, moved to the shot's end point (cbuf_info, g_aim_draw) rather than on the HUD panel. Not in a multiview
 // pass (one recording for both eyes: it can't move per eye) - it stays on the panel then.
-static bool aim_piece(Prog *pr, bool mv) {
-    extern bool vr_aim_enabled(void), vr_aim_ready(void);
-    extern void vr_aim_center(float x, float y);
+// 1: drawn in the eyes; -1: not drawn at all (the Slingshot's, aimed with the controller: its own marker instead -
+// runtime/hle/vr_slingshot.c, runtime/vr/vr.c); 0: an ordinary 2D draw.
+static int aim_piece(Prog *pr, bool mv) {
+    extern bool vr_aim_enabled(void), vr_aim_ready(void), vr_aim_slingshot(void);
+    extern void vr_aim_center(float x, float y), vr_aim_slingshot_seen(void);
     extern const char *texpatch_aim_name(int id);
     // (the reticle's centre is noted with the 3D reticle off too: aiming with the controller follows it)
-    if (mv || !g_scene_since_present || vr_world_menu_active()) return false;
+    if (mv || !g_scene_since_present || vr_world_menu_active()) return 0;
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
@@ -4398,28 +4400,38 @@ static bool aim_piece(Prog *pr, bool mv) {
         // (this frame's or the last: the dot may be drawn before the other pieces - then it stayed on the HUD panel, a
         // flat reticle of its own beside the one in the world)
         if (strncmp(nm, "th_circle", 9)) piece_frame[eye] = renderer_present_count();
-        else if (piece_frame[eye] == ~0ull || piece_frame[eye] + 1 < renderer_present_count()) return false;
+        else if (piece_frame[eye] == ~0ull || piece_frame[eye] + 1 < renderer_present_count()) return 0;
+        if (!strncmp(nm, "th_sling", 8)) vr_aim_slingshot_seen();
+        const bool sling = vr_aim_slingshot() && (!strncmp(nm, "th_sling", 8) || !strncmp(nm, "th_circle", 9));
         const float *u = (const float *)(uintptr_t)st.ubuf[0][0].addr;  // (is_hud_draw: the 192-byte 2D block)
         if (!eye) {
             // its centre: an unrotated piece (the ring, the dot; the arrows are turned 45 degrees)
             if (fabsf(u[17]) < 1e-4f && fabsf(u[20]) < 1e-4f) vr_aim_center(u[0] * u[19] + u[3], u[5] * u[23] + u[7]);
-            if (vr_aim_enabled()) aim_probe();
+            if (vr_aim_enabled() || sling) aim_probe();
         }
-        if (!vr_aim_enabled()) return false;
-        if (!vr_aim_ready()) return false;  // (no end point or eye camera yet: on the panel, as before)
+        if (sling) {
+            static int said;
+            if (!said++) LOG("[vr] aiming: the Slingshot's reticle is replaced by the marker where the seed will land\n");
+            return -1;
+        }
+        if (!vr_aim_enabled()) return 0;
+        if (!vr_aim_ready()) return 0;  // (no end point or eye camera yet: on the panel, as before)
         g_aim_draw = true;
         static int said;
         if (!said++) LOG("[vr] aiming: the reticle (%s) is drawn at the shot's end point\n", nm);
-        return true;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
 // (draw_, its program known) Where a 2D-layer draw goes. Some of the 2D layer's draws composite the 3D scene
 // (bloom, the title's haze): they read a texture made from this frame's scene and stay
 // in the eyes. The rest renders once, in eye 0, into the HUD texture; eye 1 skips it. False: skip the draw.
 static bool hud_route(Prog *pr, bool mv) {
-    if (aim_piece(pr, mv)) return true;  // (an aiming reticle: in the eyes, at the shot's end point)
+    {   // (an aiming reticle: in the eyes, at the shot's end point - or the Slingshot's, not drawn: its marker instead)
+        const int aim = aim_piece(pr, mv);
+        if (aim) return aim > 0;
+    }
     const uint64_t fr1 = renderer_present_count() + 1;
     const uint64_t fs = st.program ? st.program->stages[1].code_addr : 0;
     const uint64_t fs_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
