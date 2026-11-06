@@ -438,6 +438,10 @@ static bool planar_reflection(const float v[12], const float g[12]) {
 static int g_hand_draw = -1;
 static bool g_skin_on;  // (vr_rig_held_skin_draw: the draw being recorded is the Slingshot, moved with its hand)
 static float g_skin_T[12];
+static float g_sling_b0[12], g_sling_rel[12];  // (the Slingshot's first bone this frame; it relative to its hand)
+static uint64_t g_sling_frame;
+static int g_sling_side = -1;
+static bool g_sling_rel_ok;
 static uint64_t g_hand_count_cur;  // (the hand draw's index count: which pose's mesh)
 static bool hand_block(const VrRigAnchor *a, const float reference[7], const float game[12], float out[12]);
 static void update_controller_poses(const VrRigAnchor *a, const float reference[7]);
@@ -782,6 +786,14 @@ static struct {
 static bool g_held_on;               // (the draw being recorded is a held item: g_hand_draw its hand, g_held_k H^-1 M)
 static float g_held_k[12];
 
+static void sling_measure(void) {  // (the Slingshot and its hand drawn this frame: Hg^-1 B0 again)
+    float hi[12];
+    const int s = g_sling_side;
+    if (s < 0 || g_hand_game_frame[s] != g_sling_frame || !a_inverse(g_hand_game[s], hi)) return;
+    a_mul(hi, g_sling_b0, g_sling_rel);
+    g_sling_rel_ok = true;
+}
+
 static void held_measure(int k) {    // (the item and its hand drawn this frame: H^-1 M again)
     float hi[12];
     const int s = g_held[k].side;
@@ -898,6 +910,7 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     }
     for (int k = 0; k < HELD_KINDS; k++)  // (an item drawn before its hand this frame: measured now, used next frame)
         if (g_held[k].frame == now && g_held[k].side == side) held_measure(k);
+    if (g_sling_frame == now && g_sling_side == side) sling_measure();  // (the Slingshot too)
     return side;
 }
 
@@ -932,13 +945,33 @@ bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bone
         const float dx = bones[3] - h[3], dy = bones[7] - h[7], dz = bones[11] - h[11], d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < best) best = d2, side = s;
     }
-    float C[12], K[12], hi[12], ck[12], vck[12];
-    if (side < 0 || g_scripted || !vr_rig_controller_pose(side, C) || !a_inverse(g_hand_game[side], hi)) return false;
+    // (the hand holding it is kept: walking, turning and the game's aiming moved his hand away from it for frames)
+    if (side < 0 && g_sling_side >= 0 && g_sling_frame && g_sling_frame + 60 >= now) side = g_sling_side;
+    {   // (it is out: the game's Joy-Con is held still meanwhile - runtime/hle/vr_aim.c)
+        extern void vr_aim_slingshot_seen(void);
+        vr_aim_slingshot_seen();
+    }
+    memcpy(g_sling_b0, bones, sizeof g_sling_b0);
+    g_sling_frame = now, g_sling_side = side;
+    if (side >= 0 && g_hand_game_frame[side] == now) sling_measure();  // (its hand already drawn this frame)
+    float C[12], K[12], ck[12], target[12], bi[12];
+    if (side < 0 || g_scripted || !vr_rig_controller_pose(side, C) || !a_inverse(bones, bi)) return false;
     if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    // Its first bone where the game holds it in the hand (g_sling_rel = Hg^-1 B0, measured whenever both are drawn in
+    // one frame), with the hand on its controller: B0' = Vg C K rel; every bone moved the same: T = B0' B0^-1. (From
+    // its own bone of this very draw: with the hand's game block instead - a frame older when the hand is drawn
+    // after it, and swinging with his walk - it came loose whenever he moved or turned.)
+    if (!g_sling_rel_ok) {  // (not measured yet: from the hand's block as it is)
+        float hi[12];
+        if (!a_inverse(g_hand_game[side], hi)) return false;
+        a_mul(hi, bones, g_sling_rel);
+    }
     hand_k(side, K);
     a_mul(C, K, ck);
+    float vck[12];
     a_mul(g_rig.game_view, ck, vck);
-    a_mul(vck, hi, g_skin_T);
+    a_mul(vck, g_sling_rel, target);
+    a_mul(target, bi, g_skin_T);
     g_skin_on = true;
     static int said;
     if (!said++) fprintf(stderr, "[vr] first person: the Slingshot is in the %s hand on its controller\n", side ? "right" : "left");
