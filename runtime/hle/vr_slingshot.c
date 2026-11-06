@@ -1,10 +1,11 @@
 // VR: the Slingshot shoots where the right controller points (VR Options > Aim Items with the Controller).
 //
 // The game launches its seed along its own aim (the camera through its reticle, steered by the right Joy-Con as a
-// pointer). Instead, right after the update that launched a seed, its velocity is turned to the right controller's
-// pointing direction, its speed kept (and its first step with it); the game then flies it as its own - straight for a
-// while, then falling - and its collision does the rest. vr_slingshot_path predicts that flight for the 3D marker
-// (runtime/hle/vr_aim.c, the marker quad in runtime/vr/vr.c).
+// pointer). Instead, right after the update that launched a seed, it is moved to the right controller (just ahead of
+// it) and its velocity turned to where the controller points, its speed kept - straight from the controller's tracked
+// pose, nothing from the game's Joy-Con simulation (which is held still meanwhile: vr_aim.c vr_aim_pointer). The game
+// then flies it as its own - straight for a while, then falling - and its collision does the rest. vr_slingshot_path
+// predicts that flight for the 3D marker (runtime/hle/vr_aim.c, the marker quad in runtime/vr/vr.c).
 //
 // Found in a headset-free build by following positions near Link after a shot (a steady, fast mover), then watching
 // the functions touching it:
@@ -89,49 +90,24 @@ static void follow_flight(uint64_t a) {
                                                g_straight, g_drag_unit);
 }
 
-// The aim held while firing. Pulling the trigger tilts the controller, and the seed leaves a moment after the press
-// (Link's draw - 0.4 s in the headset-free run): the hand had moved by then, and the shot went beside the marker.
-// So the direction from just before the trigger's pull (HOLD_BACK_NS) is held - for the marker and the shot - until
-// the trigger is let go and the seed has left (or HOLD_MAX_NS). vr_slingshot_input: the input thread, every frame.
-#define HOLD_BACK_NS 60000000ll
-#define HOLD_MAX_NS 1500000000ll
-static struct { float d[3]; int64_t t; } g_hist[32];
-static int g_hist_n;
-static float g_held_dir[3];
-static _Atomic bool g_holding;
-static int64_t g_hold_since;
-static bool g_launched_since_hold;
-void vr_slingshot_input(float trigger, int64_t now_ns) {
-    float o[3], d[3];
-    const bool aim = g_vr_hud_config.aim_with_controller && vr_running() && vr_rig_controller_aim(o, d);
-    if (aim) {  // (the recent directions)
-        memmove(&g_hist[1], &g_hist[0], sizeof g_hist[0] * 31);
-        memcpy(g_hist[0].d, d, sizeof d), g_hist[0].t = now_ns;
-        if (g_hist_n < 32) g_hist_n++;
+// The shot's start and direction (world): the right controller's tracked pose as it is - its position (a little
+// ahead along it, out of the hand) and where it points; nothing from the game's Joy-Con simulation. The test's
+// direction from Link's eye point instead. False: leave the game's shot alone.
+#define FROM_HAND_AHEAD 5.0f
+static bool launch_ray(float o[3], float d[3]) {
+    if (g_test_on) {
+        memcpy(d, g_test_dir, sizeof g_test_dir);
+        float eye[3];
+        if (!player_eye(eye)) return false;
+        for (int k = 0; k < 3; k++) o[k] = eye[k] + d[k] * SEED_AHEAD_OF_EYE;
+        o[1] -= SEED_BELOW_EYE;
+        return true;
     }
-    if (!atomic_load(&g_holding)) {
-        if (trigger > 0.15f && g_hist_n) {  // (the pull begins: the direction from just before it)
-            int i = 0;
-            while (i < g_hist_n - 1 && g_hist[i].t > now_ns - HOLD_BACK_NS) i++;
-            memcpy(g_held_dir, g_hist[i].d, sizeof g_held_dir);
-            g_hold_since = now_ns, g_launched_since_hold = false;
-            atomic_store(&g_holding, true);
-        }
-    } else if ((trigger < 0.05f && g_launched_since_hold) || now_ns - g_hold_since > HOLD_MAX_NS ||
-               (trigger < 0.05f && now_ns - g_hold_since > HOLD_MAX_NS / 3)) {
-        atomic_store(&g_holding, false);
-    }
-}
-
-// The direction to launch along (world, unit): the right controller's (held while firing), or the test's. False:
-// leave the game's.
-static bool launch_dir(float d[3]) {
-    if (g_test_on) { memcpy(d, g_test_dir, sizeof g_test_dir); return true; }
-    float o[3];
     if (!(g_vr_hud_config.aim_with_controller && vr_running() && vr_rig_controller_aim(o, d))) return false;
-    if (atomic_load(&g_holding)) memcpy(d, g_held_dir, sizeof g_held_dir);
+    for (int k = 0; k < 3; k++) o[k] += d[k] * FROM_HAND_AHEAD;
     return true;
 }
+static bool launch_dir(float d[3]) { float o[3]; return launch_ray(o, d); }
 
 static void actor_execute_hook(Cpu *c) {
     const uint64_t a = c->x[0];
@@ -144,23 +120,14 @@ static void actor_execute_hook(Cpu *c) {
     static float aimed_origin[3];
     if (aimed_at == a && !memcmp(aimed_origin, o, sizeof aimed_origin)) { follow_flight(a); return; }
     if (!(speed > 1) || step > speed) return;  // (not flying, or past its first step: not this shot's launch)
+    float start[3], d[3];
+    if (!launch_ray(start, d)) { aimed_at = a, memcpy(aimed_origin, o, sizeof aimed_origin); return; }
+    // (from the hand: its launch point moved there too - the game measures its range from it)
+    for (int k = 0; k < 3; k++) o[k] = start[k], v[k] = d[k] * speed, p[k] = start[k] + d[k] * step;
     aimed_at = a, memcpy(aimed_origin, o, sizeof aimed_origin);
-    float d[3];
-    if (!launch_dir(d)) return;
-    for (int k = 0; k < 3; k++) v[k] = d[k] * speed, p[k] = o[k] + d[k] * step;
-    g_launched_since_hold = true;  // (the held aim is let go with the trigger now)
-    {   // (followed from here: vr_slingshot_path's flight measured on it)
-        extern bool player_eye(float eye[3]);
-        g_fly.a = a, g_fly.updates = 0, g_fly.falling = false;
-        memcpy(g_fly.origin, o, sizeof g_fly.origin), memcpy(g_fly.p, p, sizeof g_fly.p), memcpy(g_fly.v, v, sizeof g_fly.v);
-        float eye[3];  // (where it starts from his eye point: the prediction's start)
-        if (player_eye(eye)) {
-            extern float g_sling_below, g_sling_ahead;
-            const float h = sqrtf(d[0] * d[0] + d[2] * d[2]);
-            g_sling_below = eye[1] - o[1];
-            if (h > 0.1f) g_sling_ahead = ((o[0] - eye[0]) * d[0] + (o[2] - eye[2]) * d[2]) / h;
-        }
-    }
+    // (followed from here: vr_slingshot_path's flight measured on it)
+    g_fly.a = a, g_fly.updates = 0, g_fly.falling = false;
+    memcpy(g_fly.origin, o, sizeof g_fly.origin), memcpy(g_fly.p, p, sizeof g_fly.p), memcpy(g_fly.v, v, sizeof g_fly.v);
     static int said;
     if (said++ < 3 || getenv("SKYRECOMP_SLINGSHOT_LOG"))
         LOG("[slingshot] seed launched along the controller: %.3f %.3f %.3f, speed %.1f (gravity %.1f)\n", d[0], d[1], d[2],
@@ -169,15 +136,9 @@ static void actor_execute_hook(Cpu *c) {
 
 // The seed's flight from where a shot now would start, along the controller: n points (world), one per update,
 // up to max_len units of path. Returns how many. False start (no direction / no eye point): 0.
-float g_sling_below = SEED_BELOW_EYE, g_sling_ahead = SEED_AHEAD_OF_EYE;  // (the last shot's start, from his eye point)
 int vr_slingshot_path(float (*pts)[3], int n, float max_len) {
-    float d[3], eye[3];
-    if (n < 2 || !launch_dir(d) || !player_eye(eye)) return 0;
-    float h[2] = {d[0], d[2]};
-    const float hl = sqrtf(h[0] * h[0] + h[1] * h[1]);
-    if (hl > 1e-4f) h[0] /= hl, h[1] /= hl;
-    else h[0] = h[1] = 0;
-    float p[3] = {eye[0] + h[0] * g_sling_ahead, eye[1] - g_sling_below, eye[2] + h[1] * g_sling_ahead};
+    float d[3], p[3];
+    if (n < 2 || !launch_ray(p, d)) return 0;
     float v[3] = {d[0] * SEED_SPEED, d[1] * SEED_SPEED, d[2] * SEED_SPEED};
     // (in steps of 1/30 s's half - fine enough for the marker - with the measured flight: straight for g_straight,
     // then gravity and drag per unit of time)

@@ -392,8 +392,6 @@ void vr_input_sync(XrSpace space, XrTime time, const float reference[7]) {
         const float pose[7] = {r->orientation[0], r->orientation[1], r->orientation[2], r->orientation[3],
                                r->position[0], r->position[1], r->position[2]};
         vr_rig_set_aim(s.active && r->tracked, pose);
-        extern void vr_slingshot_input(float trigger, int64_t now_ns);  // (runtime/hle/vr_slingshot.c: the held aim)
-        vr_slingshot_input(s.active ? s.zr : 0.0f, (int64_t)SDL_GetTicksNS());
     }
     menu_input(&s);
     {   // The game walks Link relative to its own camera; in the headset the player looks around with the head.
