@@ -955,8 +955,24 @@ bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bone
     g_sling_frame = now, g_sling_side = side;
     if (side >= 0 && g_hand_game_frame[side] == now) sling_measure();  // (its hand already drawn this frame)
     float C[12], K[12], ck[12], target[12], bi[12];
-    if (side < 0 || g_scripted || !vr_rig_controller_pose(side, C) || !a_inverse(bones, bi)) return false;
-    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    // (why a draw of it is left where the game puts it, counted: SKYRECOMP_VR_HAND_LOG, once a second)
+    static uint64_t log_frame, n_seen, n_placed, n_noside, n_scripted, n_nopose, n_door;
+    static int log = -1;
+    if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+    if (log && now >= log_frame + 120) {
+        if (n_seen)
+            fprintf(stderr, "[skin-log] Slingshot draws %llu: placed %llu; no hand %llu, scripted move %llu, no controller pose %llu, "
+                            "door %llu\n", (unsigned long long)n_seen, (unsigned long long)n_placed, (unsigned long long)n_noside,
+                    (unsigned long long)n_scripted, (unsigned long long)n_nopose, (unsigned long long)n_door);
+        log_frame = now, n_seen = n_placed = n_noside = n_scripted = n_nopose = n_door = 0;
+    }
+    n_seen++;
+    extern bool door_at(void);
+    if (side < 0) { n_noside++; return false; }
+    if (g_scripted && door_at()) { n_scripted++; return false; }  // (only at a door: a walk or a turn moved his head too)
+    if (!vr_rig_controller_pose(side, C) || !a_inverse(bones, bi)) { n_nopose++; return false; }
+    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) { n_door++; return false; }
+    n_placed++;
     // Its first bone where the game holds it in the hand (g_sling_rel = Hg^-1 B0, measured whenever both are drawn in
     // one frame), with the hand on its controller: B0' = Vg C K rel; every bone moved the same: T = B0' B0^-1. (From
     // its own bone of this very draw: with the hand's game block instead - a frame older when the hand is drawn
