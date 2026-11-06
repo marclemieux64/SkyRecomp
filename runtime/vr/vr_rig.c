@@ -723,6 +723,7 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 // SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
 #define HELD_REACH 25.0f
 #define HELD_REACH_SHIELD 40.0f
+#define HELD_NOT_HIS 300.0f   // (an item's model this far from his eye point is someone else's)
 #define HELD_KEEP 70.0f
 #define HELD_PART_NEAR 40.0f
 #define HELD_MEMORY 60        // (frames)
@@ -879,6 +880,15 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     for (int i = 0; i < HELD_KINDS; i++) {
         if (count == HELD_COUNTS[i]) k = i;
         for (int p = 0; p < 4 && k < 0; p++) if (part_count[i][p] && count == part_count[i][p]) k = i, part = true;
+    }
+    if (k >= 0 && !part && g_rig.have_game_view) {
+        // Not his: another object with the item's model far from Link (a shield 1760 units off, drawn before his own
+        // every frame, took the item's place in the frame and his own shield was turned down as a second copy)
+        const float *v = g_rig.game_view;
+        float e[3];
+        for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+        const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
+        if (ex * ex + ey * ey + ez * ez > HELD_NOT_HIS * HELD_NOT_HIS) return false;
     }
     if (k < 0) {
         for (int i = 0; i < HELD_KINDS && k < 0; i++) {
