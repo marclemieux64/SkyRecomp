@@ -703,6 +703,7 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 // SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
 #define HELD_REACH 25.0f
 #define HELD_KEEP 70.0f
+#define HELD_BACK 30.0f  // (closer to his eye point than this, with its hand not drawn: on his back)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
 enum { HELD_KINDS = sizeof HELD_COUNTS / sizeof HELD_COUNTS[0] };
 static float g_hand_game[2][12];     // each hand's game view block (game camera x its model) and its frame
@@ -746,6 +747,37 @@ static bool hands_on(void) {
 
 // Which hand a rigid draw is (-1: not a hand). slot0 + 16: its view (game camera x its model); e: his eye, same space.
 static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t vb_size, const float e[3]) {
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - rigid draws turned down near where a hand just was: each kind once)
+        static int log = -1;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        const bool kind_ok = vb_size == HAND_MESH_VB && count >= 600 && count <= 900;
+        const float ex = slot0[19] - e[0], ey = slot0[23] - e[1], ez = slot0[27] - e[2];
+        const float eye_d = sqrtf(ex * ex + ey * ey + ez * ez);
+        if (log && (!kind_ok || eye_d > HAND_REACH)) {
+            extern uint64_t renderer_present_count(void);
+            const uint64_t f = renderer_present_count() + 1;
+            const float *v = g_rig.game_view;
+            float w[3];
+            for (int i = 0; i < 3; i++)
+                w[i] = v[0 * 4 + i] * (slot0[19] - v[3]) + v[1 * 4 + i] * (slot0[23] - v[7]) + v[2 * 4 + i] * (slot0[27] - v[11]);
+            for (int s = 0; s < 2; s++) {
+                if (!g_hand_last_frame[s] || g_hand_last_frame[s] + 3 < f) continue;
+                const float a = w[0] - g_hand_last[s][0], b = w[1] - g_hand_last[s][1], c = w[2] - g_hand_last[s][2];
+                const float d = sqrtf(a * a + b * b + c * c);
+                if (d > 40) continue;
+                static struct { uint64_t count, size; } seen[48];
+                static int nseen;
+                bool known = false;
+                for (int i = 0; i < nseen; i++) known |= seen[i].count == count && seen[i].size == vb_size;
+                if (known || nseen >= 48) break;
+                seen[nseen].count = count, seen[nseen++].size = vb_size;
+                fprintf(stderr, "[hand-log] frame %llu turned down near hand %d (%.1f away): count %llu vb size %llu, %.1f from the eye%s\n",
+                        (unsigned long long)f, s, d, (unsigned long long)count, (unsigned long long)vb_size, eye_d,
+                        kind_ok ? " (too far)" : "");
+                break;
+            }
+        }
+    }
     if (vb_size != HAND_MESH_VB || count < 600 || count > 900) return -1;
     const float dx = slot0[19] - e[0], dy = slot0[23] - e[1], dz = slot0[27] - e[2];
     if (dx * dx + dy * dy + dz * dz > HAND_REACH * HAND_REACH) return -1;
@@ -857,6 +889,18 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             if (d2 < best) best = d2, side = s;
         }
         if (side < 0 && was >= 0 && d2s[was] >= 0 && d2s[was] < HELD_KEEP * HELD_KEEP) side = was;
+        // Its hand not drawn at all: mid-swing the game draws the swinging arm, hand included, as part of his body
+        // (hidden in 1st person) - no rigid hand near the sword in those frames (SKYRECOMP_VR_HAND_LOG showed none).
+        // It stays on the controller then, with the offset it had (rigid on the hand's joint: it doesn't change), as
+        // long as it isn't on his back: sheathed, the hilt sits ~20 units from his eye point (vr_sword.c measured
+        // the blade's base 19-20 sheathed, 47-125 drawn). It is let go once the hand is drawn again and far from it.
+        if (side < 0 && was >= 0 && d2s[was] < 0 && g_rig.have_game_view) {
+            const float *v = g_rig.game_view;
+            float e[3];
+            for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+            const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
+            if (ex * ex + ey * ey + ez * ez > HELD_BACK * HELD_BACK) side = was;
+        }
         {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - a held item let go, and how far its hands were)
             static int log = -1;
             if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
@@ -873,7 +917,9 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         held_measure(k);
     }
     const int side = g_held[k].side;
-    if (side < 0 || !g_held[k].rel_frame || g_held[k].rel_frame + 2 < now) return false;
+    // (the offset: measured whenever the item and its hand are drawn in one frame; kept while its hand isn't drawn -
+    // rel_frame goes back to 0 when it changes hands)
+    if (side < 0 || !g_held[k].rel_frame) return false;
     if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
     float rel[12] = {0};
     if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
