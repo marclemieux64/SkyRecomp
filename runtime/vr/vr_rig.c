@@ -722,12 +722,12 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 // holding it, a readied shield 10.8 from its hand; sheathed, on his back, both are 50+ units from either hand).
 // SKYRECOMP_VR_NO_HELD=1: they stay where the game puts them.
 #define HELD_REACH 25.0f
+#define HELD_REACH_SHIELD 40.0f
 #define HELD_KEEP 70.0f
 #define HELD_PART_NEAR 40.0f
 #define HELD_MEMORY 60        // (frames)
 #define HELD_CONTINUITY 80.0f // (how far the held item may have moved since it was last drawn)
 #define HELD_PART_MIN_COUNT 24
-#define HELD_SAME_ITEM 30.0f  // (another draw with the item's count this close to it: part of the same item)
 #define HELD_BACK 30.0f       // (closer to his eye point than this, with its hand not drawn: on his back)
 #define HELD_BACK_FAR 45.0f   // (the same with its hand drawn far from it)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
@@ -917,14 +917,11 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         memcpy(g_held_k, g_held[k].rel, sizeof g_held_k);
         return true;
     } else if (g_held[k].frame == now) {
-        // Another draw with the item's own count this frame: the sword is two (hilt and blade, measured: two 1056
-        // draws a frame, at different blocks) - one at the item goes with it, keeping its offset from it (below);
-        // something else sharing the count far from it - Skyloft's tower top shares the sword hilt's - stays.
-        const float dx = m[3] - g_held[k].block[3], dy = m[7] - g_held[k].block[7], dz = m[11] - g_held[k].block[11];
-        if (dx * dx + dy * dy + dz * dz > HELD_SAME_ITEM * HELD_SAME_ITEM) return false;
+        // Another draw with the item's own count this frame: the same item again (another pass: its exact block) or
+        // something else sharing the count - Skyloft's tower top shares the sword hilt's - left where it is.
         bool same = true;
         for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
-        if (!same) part = true;  // (its own offset from the item: as a part's)
+        if (!same) return false;
     }
     if (g_held[k].frame != now) {
         // which hand it's in: the nearest one drawn this frame or the last, within reach (block translations are
@@ -938,7 +935,9 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         // hand, which the game draws 80-160 units from it then, and it went back to the game's pose)
         const int was = g_held[k].side >= 0 && g_held[k].frame && g_held[k].frame + HELD_MEMORY >= now ? g_held[k].side : -1;
         int side = -1;
-        float best = HELD_REACH * HELD_REACH, d2s[2] = {-1, -1};
+        // (the shield sits further from the hand the game draws than the sword does: 25-31 units here, readied)
+        const float reach = k == 1 ? HELD_REACH_SHIELD : HELD_REACH;
+        float best = reach * reach, d2s[2] = {-1, -1};
         for (int s = 0; s < 2; s++) {
             if (!g_hand_game_frame[s] || g_hand_game_frame[s] + 1 < now) continue;
             const float dx = m[3] - g_hand_game[s][3], dy = m[7] - g_hand_game[s][7], dz = m[11] - g_hand_game[s][11];
@@ -979,6 +978,11 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             if (log && was < 0 && side < 0 && !part && g_held[k].side >= 0)
                 fprintf(stderr, "[held-log] frame %llu kind %d let go after not being drawn since %llu, %.1f from the eye\n",
                         (unsigned long long)now, k, (unsigned long long)g_held[k].frame, eye_d);
+            static uint64_t last_free[HELD_KINDS];
+            if (log && side < 0 && !part && now >= last_free[k] + 120)
+                last_free[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d not held: hands %.1f / %.1f away, %.1f from the eye\n",
+                                            (unsigned long long)now, k, d2s[0] >= 0 ? sqrtf(d2s[0]) : -1.0f,
+                                            d2s[1] >= 0 ? sqrtf(d2s[1]) : -1.0f, eye_d);
             static uint64_t last_eye[HELD_KINDS];
             if (log && side >= 0 && !part && now >= last_eye[k] + 60)
                 last_eye[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d held, %.1f from the eye\n", (unsigned long long)now, k, eye_d);
@@ -1002,7 +1006,7 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         return false;
     }
     float rel[12] = {0};
-    if (!part) memcpy(rel, g_held[k].rel, sizeof rel);
+    if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
     else {  // (a part on the item's joint: the same offset, its own block's relation to the item kept)
         float ii[12], part[12];
         if (!a_inverse(g_held[k].block, ii)) return false;
