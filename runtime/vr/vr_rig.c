@@ -689,10 +689,30 @@ bool vr_rig_game_hand(int side, float w[3]) {
     return true;
 }
 
+// A controller's pose can drop out for a few frames (held close to the face - the shield raised - the headset's
+// cameras lose it): its hand, and what it holds, went back to the game's pose for those frames. The last good pose is
+// kept for GRIP_HOLD frames (SKYRECOMP_VR_HAND_LOG logs each dropout).
+#define GRIP_HOLD 60
 void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const float right[7]) {
-    g_grip_ok[0] = left_ok && left, g_grip_ok[1] = right_ok && right;
-    if (g_grip_ok[0]) memcpy(g_grip[0], left, sizeof g_grip[0]);
-    if (g_grip_ok[1]) memcpy(g_grip[1], right, sizeof g_grip[1]);
+    extern uint64_t renderer_present_count(void);
+    static uint64_t good[2];
+    static int lost[2];
+    static int log = -1;
+    if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+    const uint64_t f = renderer_present_count() + 1;
+    const bool ok[2] = {left_ok && left, right_ok && right};
+    const float *pose[2] = {left, right};
+    for (int s = 0; s < 2; s++) {
+        if (ok[s]) {
+            if (log && lost[s]) fprintf(stderr, "[hand-log] frame %llu controller %d pose back after %d frames\n", (unsigned long long)f, s, lost[s]);
+            memcpy(g_grip[s], pose[s], sizeof g_grip[s]);
+            good[s] = f, lost[s] = 0, g_grip_ok[s] = true;
+        } else {
+            if (log && !lost[s]) fprintf(stderr, "[hand-log] frame %llu controller %d pose lost\n", (unsigned long long)f, s);
+            lost[s]++;
+            g_grip_ok[s] = good[s] && good[s] + GRIP_HOLD >= f;  // (the last good pose, for a moment)
+        }
+    }
 }
 // ---- 1st person: what his hands hold (the sword, the shield). They're rigid draws of their own, posed by the game
 // on his hand's joint; placed with the hand, they'd stay where the game animates them while the hand drawn goes to
@@ -948,7 +968,13 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     // (the offset: measured whenever the item and its hand are drawn in one frame; kept while its hand isn't drawn -
     // rel_frame goes back to 0 when it changes hands)
     if (side < 0 || !g_held[k].rel_frame) return false;
-    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) return false;
+    if (atomic_load(&g_door_grab) == side || atomic_load(&g_door_hover[side]) != 0.0f) {
+        static int log = -1;
+        static uint64_t last;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        if (log && now >= last + 120) last = now, fprintf(stderr, "[held-log] frame %llu kind %d left to the game: a door's handle\n", (unsigned long long)now, k);
+        return false;
+    }
     float rel[12] = {0};
     if (count == HELD_COUNTS[k]) memcpy(rel, g_held[k].rel, sizeof rel);
     else {  // (a part on the item's joint: the same offset, its own block's relation to the item kept)
@@ -1019,6 +1045,16 @@ static bool hand_block(const VrRigAnchor *a, const float reference[7], const flo
     // door: a big sword swing lunges his head that far from the eye point too, and the hands, the sword and the shield
     // went back to the game's swinging pose for its frames)
     extern bool door_at(void);
+    {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1 - why a held item was left to the game, at most once a second)
+        static int log = -1;
+        static uint64_t last;
+        if (log < 0) log = getenv("SKYRECOMP_VR_HAND_LOG") != NULL;
+        extern uint64_t renderer_present_count(void);
+        const uint64_t f = renderer_present_count();
+        if (log && g_held_on && side >= 0 && side < 2 && f >= last + 120 && (!g_grip_ok[side] || (g_scripted && door_at())))
+            last = f, fprintf(stderr, "[held-log] frame %llu held item on %d left to the game: %s\n", (unsigned long long)f, side,
+                              !g_grip_ok[side] ? "controller pose lost" : "scripted move at a door");
+    }
     if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || (g_scripted && door_at())) return false;
 
     float rel[9], off[3], rc[9], c[12], k[12], ck[12];
