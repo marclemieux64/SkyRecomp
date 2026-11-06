@@ -194,12 +194,48 @@ animates them while the hand drawn goes to its controller. Each one in a hand is
 that hand, followed by its offset from the game's hand (`H^-1 M`, from the two view blocks: the game camera cancels).
 So the grip is the game's own and nothing is tuned.
 
-Held or not is read from where the game puts it. Measured in Skyloft, in first person: a drawn sword's hilt sits
-10.3 to 10.6 units from the hand holding it, and a readied shield 10.8 units from its hand. Sheathed on his back, both
-are 50 or more units from either hand, so the cut-off is 25. The offset is measured in a frame where both the item and
-its hand are drawn. When the item comes first, the hand's draw measures it and the next frame uses it. Another draw
-with exactly the held item's block (a part on the same joint) goes with it. `SKYRECOMP_VR_NO_HELD=1` leaves them where
-the game puts them.
+Picking it up is read from where the game puts it:
+
+- **Sword:** taken by the nearest hand within 25 units. Measured in our build, a drawn sword's hilt sits 10.3 to
+  10.6 units from the hand holding it.
+- **Shield:** taken within 40 units. Readied, it sits 25 to 31 units from the hand the game draws here.
+- **Sheathed:** on his back, both are 50 or more units from either hand.
+- **The offset:** measured in a frame where both the item and its hand are drawn. When the item comes first, the
+  hand's draw measures it and the next frame uses it.
+
+Once taken, it stays on that controller, with that offset, until it is on his back. These were all found in play
+with `SKYRECOMP_VR_HAND_LOG=1`:
+
+- **The hand moves fast:** in a swing it moves further than 25 units in a frame, so the held hand keeps the item
+  within 70 units (`HELD_KEEP`).
+- **The game draws no hand:** mid-swing, the swinging arm is part of his body, which is hidden in first person.
+- **The hand is drawn far away:** raising or bashing with the shield draws his left hand 80 to 160 units from it.
+- **Letting go:** only within 30 units of his eye point with no hand drawn, or 45 with the hand drawn far. The
+  sheathed hilt sits 21 to 24 units from it.
+- **Gaps:** the holding hand is remembered for 60 frames in which the item isn't drawn.
+- **A controller dropping out:** its last good pose is kept for 60 frames.
+
+Other draws can share an item's index count: Skyloft's tower top shares the sword hilt's, and a shield model sat
+1760 units away. Only the held instance moves:
+
+- **Far away:** a model more than 300 units from his eye point is someone else's.
+- **Later in the frame:** a later draw with the item's count must have its exact block.
+- **First in the frame:** the first draw must follow on (within 80 units) from where the held item was.
+
+A draw with exactly the held item's block (a part on the same joint, such as the blade) is remembered by its index
+count, so it goes with the item in both eyes even when it's drawn first. It counts only within 40 units of the
+item's last place, and tiny counts (under 24) aren't remembered.
+
+Lunges: his rig's "scripted move" (his head 45 units from the eye point) leaves the hands to the game only at a door
+(`door_at`). A big sword swing lunges that far too, and the hands, sword and shield went back to the game's swing.
+
+His hands: a new hand mesh with no side known yet takes the side of the game camera it hangs on. In first person the
+camera's left is his left hand. Taken the other way round, each controller showed the other hand, mirrored, and the
+sword went to the left controller. `SKYRECOMP_VR_HAND_SWAP=1` brings back the old assignment.
+
+`SKYRECOMP_VR_NO_HELD=1` leaves the items where the game puts them. `SKYRECOMP_VR_HAND_LOG=1` logs the hands, the held
+items and why one is let go.
+
 ### The aiming reticle at the shot's end point (`runtime/hle/vr_aim.c`)
 
 On the flat HUD panel, the Slingshot's, Bow's, Clawshots' and Gust Bellows' reticle sits at the panel's distance,
