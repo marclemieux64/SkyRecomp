@@ -724,6 +724,7 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 #define HELD_REACH 25.0f
 #define HELD_KEEP 70.0f
 #define HELD_PART_NEAR 40.0f
+#define HELD_MEMORY 60        // (frames)
 #define HELD_BACK 30.0f       // (closer to his eye point than this, with its hand not drawn: on his back)
 #define HELD_BACK_FAR 45.0f   // (the same with its hand drawn far from it)
 static const uint64_t HELD_COUNTS[] = {1056, 2352};  // (index counts: the sword, the shield)
@@ -919,7 +920,10 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
         // compared with the hand's last frame, and in a swing the hand moves further than HELD_REACH in a frame (the
         // sword went back to the game's swinging hand). Sheathed, on his back, it is 50+ units from either hand and
         // the hand moves away from it.
-        const int was = g_held[k].side >= 0 && g_held[k].frame + 1 >= now && g_held[k].frame ? g_held[k].side : -1;
+        // (the hand holding it is remembered across frames the item isn't drawn in - up to HELD_MEMORY: with only the
+        // last frame's, a raised shield missing a frame or two had to be taken again within HELD_REACH of his left
+        // hand, which the game draws 80-160 units from it then, and it went back to the game's pose)
+        const int was = g_held[k].side >= 0 && g_held[k].frame && g_held[k].frame + HELD_MEMORY >= now ? g_held[k].side : -1;
         int side = -1;
         float best = HELD_REACH * HELD_REACH, d2s[2] = {-1, -1};
         for (int s = 0; s < 2; s++) {
@@ -953,6 +957,9 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
                 fprintf(stderr, "[held-log] frame %llu kind %d let go: hands %.1f / %.1f away (drawn %llu / %llu), %.1f from the eye\n",
                         (unsigned long long)now, k, d2s[0] >= 0 ? sqrtf(d2s[0]) : -1.0f, d2s[1] >= 0 ? sqrtf(d2s[1]) : -1.0f,
                         (unsigned long long)g_hand_game_frame[0], (unsigned long long)g_hand_game_frame[1], eye_d);
+            if (log && was < 0 && side < 0 && !part && g_held[k].side >= 0)
+                fprintf(stderr, "[held-log] frame %llu kind %d let go after not being drawn since %llu, %.1f from the eye\n",
+                        (unsigned long long)now, k, (unsigned long long)g_held[k].frame, eye_d);
             static uint64_t last_eye[HELD_KINDS];
             if (log && side >= 0 && !part && now >= last_eye[k] + 60)
                 last_eye[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d held, %.1f from the eye\n", (unsigned long long)now, k, eye_d);
