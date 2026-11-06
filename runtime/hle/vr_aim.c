@@ -106,8 +106,13 @@ static bool aim_line(const float V[12], float o[3], float d[3]) {
 int vr_aim_probe(int slot, float u[], float v[], int max, bool flip_y, bool minus_one) {
     uint64_t f = renderer_present_count();
     float o[3], d[3], V[12];
-    if (slot < 0 || slot > 1 || g_eye_frame[0] == ~0ull || g_eye_frame[0] + 1 < f || !game_camera_view(V) || !aim_line(V, o, d))
+    if (slot < 0 || slot > 1 || g_eye_frame[0] == ~0ull || g_eye_frame[0] + 1 < f || !game_camera_view(V))
         return 0;
+    // Aiming with the controller: along its ray - it starts at the hand, in the left eye's view from the start. The
+    // game camera's line starts wherever that camera is (in VR not at the eyes): its first stretch fell outside the
+    // left eye's picture, so where it went behind a surface there was missed ("nothing hit", the reticle far off).
+    // The game is then aimed at the point found (vr_aim_pointer): the reticle and the shot meet there.
+    if (!(g_vr_hud_config.aim_with_controller && vr_rig_controller_aim(o, d)) && !aim_line(V, o, d)) return 0;
     int n = NS < max ? NS : max;
     for (int i = 0; i < n; i++) {
         float t = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
@@ -181,7 +186,9 @@ bool vr_aim_pointer(float *u_out, float *v_out) {
     float o[3], d[3], V[12], c[3], k[4];
     if (!vr_rig_controller_aim(o, d) || !game_camera_view(V) || !(fabsf(g_game[0]) > 1e-4f && fabsf(g_game[5]) > 1e-4f))
         return false;
-    const float p[3] = {o[0] + d[0] * AIM_FAR, o[1] + d[1] * AIM_FAR, o[2] + d[2] * AIM_FAR};
+    // (where the controller's ray meets the world - the 3D reticle's point, from its ray: vr_aim_probe - else far along it)
+    float p[3] = {o[0] + d[0] * AIM_FAR, o[1] + d[1] * AIM_FAR, o[2] + d[2] * AIM_FAR};
+    if (g_P_frame != ~0ull && g_P_frame + 10 >= f) memcpy(p, g_P, sizeof p);
     to_cam(V, p, c);
     float x, y;
     if (to_clip(g_game, c, k)) x = k[0] / k[3], y = k[1] / k[3];
