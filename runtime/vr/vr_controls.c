@@ -241,6 +241,19 @@ static bool panel_pointer(SkyJoyConSensor *s) {
     return true;
 }
 
+// Aiming an item (a reticle on screen): the Joy-Con orientation that puts the game's reticle where the right
+// controller points (runtime/hle/vr_aim.c vr_aim_pointer), with the menu pointer's mapping.
+static bool aim_pointer(SkyJoyConSensor *s) {
+    extern bool vr_aim_pointer(float *u, float *v);
+    float u, v;
+    if (!vr_aim_pointer(&u, &v)) return false;
+    vr_pointer_direction(u, v, s->direction);
+    for (int i = 0; i < 3; i++) s->accel[i] = -s->direction[i * 3 + 2];  // (gravity as it would be held: see above)
+    static int logged;
+    if (!logged++) LOG("[vr] aiming: the item aims where the right controller points\n");
+    return true;
+}
+
 bool vr_joycon_state(VrJoyConState *state) {
     SkyJoyConState s;
     extern bool motion_joycon_mode(void);
@@ -270,7 +283,8 @@ bool vr_joycon_sensor(int device, VrJoyConSensor *sensor) {
     SkyJoyConSensor s;
     extern bool motion_joycon_mode(void);
     if (!sensor || controllers_off() || !motion_joycon_mode() || !sky_joycon_sensor(device, &s)) return false;
-    if (device == 1 && !panel_pointer(&s)) skyward_strike_assist(&s);  // (the right Joy-Con: the pointer, the sword)
+    // (the right Joy-Con: an aimed item, the menu pointer, the sword)
+    if (device == 1 && !aim_pointer(&s) && !panel_pointer(&s)) skyward_strike_assist(&s);
     memcpy(sensor, &s, sizeof s);
     return true;
 }

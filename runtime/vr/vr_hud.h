@@ -99,6 +99,11 @@ typedef struct VRHUDConfig {
         = true
 #endif
         ;                         // an aiming item's reticle at the shot's end point in the world (hle/vr_aim.c)
+    bool aim_with_controller
+#ifdef __cplusplus
+        = true
+#endif
+        ;                         // an aimed item goes where the right controller points (hle/vr_aim.c)
 } VRHUDConfig;
 
 extern VRHUDConfig g_vr_hud_config;

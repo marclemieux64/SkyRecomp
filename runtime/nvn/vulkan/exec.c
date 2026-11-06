@@ -4342,7 +4342,8 @@ static bool aim_piece(Prog *pr, bool mv) {
     extern bool vr_aim_enabled(void), vr_aim_ready(void);
     extern void vr_aim_center(float x, float y);
     extern const char *texpatch_aim_name(int id);
-    if (mv || !vr_aim_enabled() || !g_scene_since_present || vr_world_menu_active()) return false;
+    // (the reticle's centre is noted with the 3D reticle off too: aiming with the controller follows it)
+    if (mv || !g_scene_since_present || vr_world_menu_active()) return false;
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
@@ -4357,8 +4358,9 @@ static bool aim_piece(Prog *pr, bool mv) {
         if (!eye) {
             // its centre: an unrotated piece (the ring, the dot; the arrows are turned 45 degrees)
             if (fabsf(u[17]) < 1e-4f && fabsf(u[20]) < 1e-4f) vr_aim_center(u[0] * u[19] + u[3], u[5] * u[23] + u[7]);
-            aim_probe();
+            if (vr_aim_enabled()) aim_probe();
         }
+        if (!vr_aim_enabled()) return false;
         if (!vr_aim_ready()) return false;  // (no end point or eye camera yet: on the panel, as before)
         g_aim_draw = true;
         static int said;

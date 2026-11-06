@@ -653,6 +653,9 @@ bool vr_rig_controller_world(int side, float w[3]) {
 static float g_ctrl_pose[2][12];
 static uint64_t g_ctrl_pose_frame[2];
 static pthread_mutex_t g_ctrl_pose_lock = PTHREAD_MUTEX_INITIALIZER;  // (written by the replay thread, read by the game)
+static bool g_aim_ok;                 // (the right controller's aim pose, local space; and its ray in the game world)
+static float g_aim_pose[7], g_aim_world[6];
+static uint64_t g_aim_world_frame;
 bool vr_rig_controller_pose(int side, float c[12]) {
     extern uint64_t renderer_present_count(void);
     if (side < 0 || side > 1) return false;
@@ -677,7 +680,32 @@ static void update_controller_poses(const VrRigAnchor *a, const float reference[
         }
         g_ctrl_pose_frame[side] = renderer_present_count() + 1;
     }
+    if (g_aim_ok) {  // (the right controller's pointing ray, the same way)
+        float rel[9], off[3], rc[9], p[3];
+        vr_rig_relative(reference, g_aim_pose, vr_rig_units_per_metre(), rel, off);
+        m_mul(a->rotation, rel, rc);
+        m_vec(a->rotation, off, p);
+        for (int i = 0; i < 3; i++) g_aim_world[i] = p[i] + a->origin[i], g_aim_world[3 + i] = -rc[i * 3 + 2];
+        g_aim_world_frame = renderer_present_count() + 1;
+    }
     pthread_mutex_unlock(&g_ctrl_pose_lock);
+}
+
+// (vr_input.c, each frame) The right controller's aim pose (OpenXR local space: x y z w, position): where it points.
+void vr_rig_set_aim(bool ok, const float pose[7]) {
+    pthread_mutex_lock(&g_ctrl_pose_lock);
+    g_aim_ok = ok && pose;
+    if (g_aim_ok) memcpy(g_aim_pose, pose, sizeof g_aim_pose);
+    pthread_mutex_unlock(&g_ctrl_pose_lock);
+}
+// The right controller's pointing ray in the game world: its origin and its direction (unit), refreshed with the eyes.
+bool vr_rig_controller_aim(float o[3], float d[3]) {
+    extern uint64_t renderer_present_count(void);
+    pthread_mutex_lock(&g_ctrl_pose_lock);
+    const bool ok = g_aim_world_frame && g_aim_world_frame + 3 >= renderer_present_count() + 1;
+    if (ok) memcpy(o, g_aim_world, 12), memcpy(d, g_aim_world + 3, 12);
+    pthread_mutex_unlock(&g_ctrl_pose_lock);
+    return ok;
 }
 
 // Where the game puts Link's hand (game world, the wrist) - last drawn within 2 frames

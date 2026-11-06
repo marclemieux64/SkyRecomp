@@ -859,6 +859,9 @@ static void tab_vr_options(void) {
     changed |= opt_toggle("Aiming Reticle in 3D", &g_vr_hud_config.aim_reticle_3d, true,
                           "The Slingshot's, Bow's, Clawshots' and Gust Bellows' reticle is drawn where the shot will "
                           "land, at its depth in the world, instead of on the flat HUD panel.");
+    changed |= opt_toggle("Aim Items with the Controller", &g_vr_hud_config.aim_with_controller, true,
+                          "Aimed items (Slingshot, Bow, Clawshots, Gust Bellows, Beetle) go where the right controller "
+                          "points, instead of following the game's own motion pointer.");
 
     opt_section("Wrist HUD");
     changed |= opt_toggle("Enable Wrist HUD", &g_vr_hud_config.wrist_hud, true,

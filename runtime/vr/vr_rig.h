@@ -43,6 +43,10 @@ int vr_rig_hand_side(const float *slot0, uint64_t size0, uint64_t count, uint64_
 void vr_rig_set_hand_draw(int side);
 // (after vr_rig_set_hand_draw(-1)) a rigid draw that is the sword or shield in his hand: drawn with that hand
 bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count);
+// The right controller's aim pose (vr_input.c, OpenXR local space: x y z w, position), and its pointing ray in the
+// game world (origin, unit direction) - for aiming items with the controller (runtime/hle/vr_aim.c)
+void vr_rig_set_aim(bool ok, const float pose[7]);
+bool vr_rig_controller_aim(float o[3], float d[3]);
 bool vr_rig_settling(void);  // 1st person, just spawned: Link's eye point not settled yet (the view is held black)
 bool vr_rig_hand_blocks(float orig[12], float repl[12]);  // (exec.c) this hand draw's view block: game's, replacement
 // A controller's grip pose in the game world (row-major 3x4: x right, y up, -z forward; game units), as of the last

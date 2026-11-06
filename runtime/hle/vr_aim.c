@@ -25,6 +25,7 @@
 #include "../vr/vr_hud.h"
 
 bool game_camera_view(float view[12]);  // runtime/hle/player.c: the game camera (world -> camera), as this frame's
+bool vr_rig_controller_aim(float o[3], float d[3]);  // runtime/vr/vr_rig.c: the right controller's ray, game world
 extern uint64_t renderer_present_count(void);
 
 #define NS 48
@@ -154,6 +155,55 @@ void vr_aim_result(int slot, const float scene[], int n) {
         for (int i = 0; i < n; i += 4)
             LOG("[aim]   sample %d%s: line depth %.7f, scene %.7f\n", i, ok[i] ? "" : " (off screen)", d[i], scene[i]);
     }
+}
+
+// ---------------------------------------------------------------- aiming with the controller
+// The game aims an item with the right Joy-Con's orientation, as a pointer: the reticle sits where it points on the
+// screen, the camera turning when it points past an edge, relative to a centre it sets itself - hard to hit with
+// in VR, where the screen is the game camera and not where the controller points. Instead the game is told the
+// orientation that puts its reticle where the right controller's ray meets the game's screen (vr_controls.c
+// aim_pointer, with the menu pointer's mapping vr_pointer_direction): the shot goes where the controller points.
+// Off the screen the reticle is sent past that edge and the game turns its camera there. The mapping's centre may
+// sit elsewhere (the game sets its own when the item comes out), so where the reticle really is (vr_aim_center)
+// is compared with where it should be and the difference fed back, slowly, while both are on screen.
+// VR Options > Aim Items with the Controller ([VR] aim_with_controller); SKYRECOMP_AIM_LOG=1 logs it.
+#define AIM_FAR 3000.0f     // (the ray's point that is put on the screen: far enough that its origin hardly matters)
+#define AIM_GAIN 0.12f      // (of the reticle's error fed back per game frame)
+#define AIM_BIAS_MAX 0.6f
+bool vr_aim_pointer(float *u_out, float *v_out) {
+    static float bias[2];
+    static uint64_t last;
+    const uint64_t f = renderer_present_count();
+    if (!g_vr_hud_config.aim_with_controller || g_center_frame == ~0ull || g_center_frame + 10 < f) {
+        bias[0] = bias[1] = 0;  // (no reticle on screen: the next item starts afresh)
+        return false;
+    }
+    float o[3], d[3], V[12], c[3], k[4];
+    if (!vr_rig_controller_aim(o, d) || !game_camera_view(V) || !(fabsf(g_game[0]) > 1e-4f && fabsf(g_game[5]) > 1e-4f))
+        return false;
+    const float p[3] = {o[0] + d[0] * AIM_FAR, o[1] + d[1] * AIM_FAR, o[2] + d[2] * AIM_FAR};
+    to_cam(V, p, c);
+    float x, y;
+    if (to_clip(g_game, c, k)) x = k[0] / k[3], y = k[1] / k[3];
+    else x = c[0] > 0 ? 4.0f : -4.0f, y = c[1] > 0 ? 4.0f : -4.0f;  // (behind the camera: past the edge it's on)
+    extern int nvn_window_origin(void);
+    const bool flip = nvn_window_origin() == 0;  // (the screen's rows run down; clip y up unless the origin is the top)
+    const float want[2] = {x * 0.5f + 0.5f, (flip ? -y : y) * 0.5f + 0.5f};
+    const float now[2] = {g_center[0] * 0.5f + 0.5f, (flip ? -g_center[1] : g_center[1]) * 0.5f + 0.5f};
+    const bool inside = want[0] > 0.05f && want[0] < 0.95f && want[1] > 0.05f && want[1] < 0.95f &&
+                        now[0] > 0.02f && now[0] < 0.98f && now[1] > 0.02f && now[1] < 0.98f;
+    if (f != last && inside && g_center_frame + 2 >= f)
+        for (int i = 0; i < 2; i++) bias[i] = fmaxf(-AIM_BIAS_MAX, fminf(AIM_BIAS_MAX, bias[i] + AIM_GAIN * (want[i] - now[i])));
+    last = f;
+    *u_out = fmaxf(-0.4f, fminf(1.4f, want[0] + bias[0]));
+    *v_out = fmaxf(-0.4f, fminf(1.4f, want[1] + bias[1]));
+    static int log = -1;
+    static uint64_t logged;
+    if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
+    if (log && f >= logged + 60)
+        logged = f, LOG("[aim] controller: wants %.3f %.3f, reticle at %.3f %.3f, correction %.3f %.3f\n", want[0], want[1],
+                        now[0], now[1], bias[0], bias[1]);
+    return true;
 }
 
 // (exec.c) An end point and both eyes' cameras, recent: the reticle can go to the eyes (else it stays on the panel,
