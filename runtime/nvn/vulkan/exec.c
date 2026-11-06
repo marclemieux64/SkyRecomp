@@ -4395,8 +4395,10 @@ static bool aim_piece(Prog *pr, bool mv) {
         // (plain circles - the Slingshot's dot - only after a real reticle piece this frame: other screens use them)
         static uint64_t piece_frame[2] = {~0ull, ~0ull};
         const int eye = (int)vk_vr_eye() & 1;
+        // (this frame's or the last: the dot may be drawn before the other pieces - then it stayed on the HUD panel, a
+        // flat reticle of its own beside the one in the world)
         if (strncmp(nm, "th_circle", 9)) piece_frame[eye] = renderer_present_count();
-        else if (piece_frame[eye] != renderer_present_count()) return false;
+        else if (piece_frame[eye] == ~0ull || piece_frame[eye] + 1 < renderer_present_count()) return false;
         const float *u = (const float *)(uintptr_t)st.ubuf[0][0].addr;  // (is_hud_draw: the 192-byte 2D block)
         if (!eye) {
             // its centre: an unrotated piece (the ring, the dot; the arrows are turned 45 degrees)

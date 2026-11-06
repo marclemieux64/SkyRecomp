@@ -251,7 +251,24 @@ bool vr_aim_target(int eye, float target[2], float centre[2]) {
         g_center_frame == ~0ull || g_center_frame + 10 < f || !game_camera_view(V))
         return false;
     if (latch_frame != f) latch_frame = f, latch[0] = g_center[0], latch[1] = g_center[1];
-    to_cam(V, g_P, c);
+    // On the game's own aim - the line from its camera through its reticle, where the shot goes - at the end point's
+    // depth along it: the end point is on the controller's ray, which the game's reticle follows a frame or two late,
+    // so drawn there the reticle in the world and the shot (and the game's reticle) parted while the hand moved.
+    float P[3];
+    memcpy(P, g_P, sizeof P);
+    if (fabsf(g_game[0]) > 1e-4f && fabsf(g_game[5]) > 1e-4f) {
+        float o[3], d[3];
+        for (int i = 0; i < 3; i++) o[i] = -(V[i] * V[3] + V[4 + i] * V[7] + V[8 + i] * V[11]);  // (its position: -R^T t)
+        const float k[3] = {(latch[0] + g_game[2]) / g_game[0], (latch[1] + g_game[6]) / g_game[5], -1};
+        for (int i = 0; i < 3; i++) d[i] = V[i] * k[0] + V[4 + i] * k[1] + V[8 + i] * k[2];  // (R^T: camera to world)
+        const float n = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (n > 0) {
+            float along = 0;
+            for (int i = 0; i < 3; i++) d[i] /= n, along += (g_P[i] - o[i]) * d[i];
+            if (along > RANGE_NEAR) for (int i = 0; i < 3; i++) P[i] = o[i] + d[i] * along;
+        }
+    }
+    to_cam(V, P, c);
     if (!to_clip(g_eye[eye], c, ke)) return false;
     target[0] = ke[0] / ke[3], target[1] = ke[1] / ke[3];
     centre[0] = latch[0], centre[1] = latch[1];
