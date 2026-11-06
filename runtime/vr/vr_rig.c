@@ -987,8 +987,11 @@ int vr_rig_hand_side(const float *slot0, uint64_t size0, uint64_t count, uint64_
 // the projection stays the eye's, as for every draw). False: leave the draw as the game places it.
 static bool hand_block(const VrRigAnchor *a, const float reference[7], const float game[12], float out[12]) {
     const int side = g_hand_draw;
-    // (during a scripted move his hands stay where the game animates them: on the door's handle)
-    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || g_scripted) return false;
+    // (during a scripted move at a door his hands stay where the game animates them: on the door's handle. Only at a
+    // door: a big sword swing lunges his head that far from the eye point too, and the hands, the sword and the shield
+    // went back to the game's swinging pose for its frames)
+    extern bool door_at(void);
+    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || (g_scripted && door_at())) return false;
 
     float rel[9], off[3], rc[9], c[12], k[12], ck[12];
     vr_rig_relative(reference, g_grip[side], vr_rig_units_per_metre(), rel, off);
