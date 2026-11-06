@@ -221,25 +221,29 @@ bool vr_aim_ready(void) {
            g_eye_frame[1] != ~0ull && g_eye_frame[1] + 1 >= f;
 }
 
-// The reticle's pieces in eye `eye`: how far to move them (layout units, x and y), given their projection `proj` (the
-// 2D layout's: row-major 4x4). False: no end point yet - leave them where the game puts them.
-bool vr_aim_shift(int eye, const float proj[16], float delta[2]) {
-    uint64_t f = renderer_present_count();
-    float V[12], c[3], ke[4], kg[4];
+// The reticle in eye `eye`: where its centre goes in that eye's picture (clip x, y) and where its centre is now on
+// the game's screen (clip x, y; once per frame, so every piece of a frame moves together - with each piece moved by
+// the game's own projection of the end point instead, the game's reticle lagging the controller put the pieces off
+// it, and a centre changing mid-frame pulled them apart). False: no end point yet.
+bool vr_aim_target(int eye, float target[2], float centre[2]) {
+    static uint64_t latch_frame = ~0ull;
+    static float latch[2];
+    const uint64_t f = renderer_present_count();
+    float V[12], c[3], ke[4];
     if (eye < 0 || eye > 1 || g_P_frame == ~0ull || g_P_frame + 10 < f || g_eye_frame[eye] == ~0ull || g_eye_frame[eye] + 1 < f ||
-        !game_camera_view(V) || !(fabsf(proj[0]) > 1e-6f && fabsf(proj[5]) > 1e-6f))
+        g_center_frame == ~0ull || g_center_frame + 10 < f || !game_camera_view(V))
         return false;
+    if (latch_frame != f) latch_frame = f, latch[0] = g_center[0], latch[1] = g_center[1];
     to_cam(V, g_P, c);
-    if (!to_clip(g_eye[eye], c, ke) || !to_clip(g_game, c, kg)) return false;
-    delta[0] = (ke[0] / ke[3] - kg[0] / kg[3]) / proj[0];
-    delta[1] = (ke[1] / ke[3] - kg[1] / kg[3]) / proj[5];
+    if (!to_clip(g_eye[eye], c, ke)) return false;
+    target[0] = ke[0] / ke[3], target[1] = ke[1] / ke[3];
+    centre[0] = latch[0], centre[1] = latch[1];
     static int log = -1;
     static uint64_t logged[2];
     if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
-    if (log && f >= logged[eye] + 60) {
-        logged[eye] = f;
-        LOG("[aim] frame %llu eye %d: end point at %.4f %.4f in its picture (the game's %.4f %.4f), %.1f deep\n",
-            (unsigned long long)f, eye, ke[0] / ke[3], ke[1] / ke[3], kg[0] / kg[3], kg[1] / kg[3], ke[3]);
-    }
-    return isfinite(delta[0]) && isfinite(delta[1]);
+    if (log && f >= logged[eye] + 60)
+        logged[eye] = f, LOG("[aim] frame %llu eye %d: end point at %.4f %.4f in its picture, %.1f deep; reticle centre %.4f %.4f\n",
+                             (unsigned long long)f, eye, target[0], target[1], ke[3], centre[0], centre[1]);
+    return isfinite(target[0]) && isfinite(target[1]);
 }
+

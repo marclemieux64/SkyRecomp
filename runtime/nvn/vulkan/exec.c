@@ -2868,13 +2868,24 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // uniform through the strict camera classifier so those screen-space effects use the same eye as their geometry.
     // Guest memory keeps the game's mono camera.
     if (g_aim_draw && stage == 0 && idx == 0 && size >= 96) {  // VR aiming: a reticle piece, moved to the shot's end point
-        extern bool vr_aim_shift(int eye, const float proj[16], float delta[2]);
+        // Each piece keeps its place around the reticle's centre (one centre per frame), the centre going to the end
+        // point in this eye's picture. The layout is the game's 16:9 screen; the eye's picture is nearly square, so
+        // the piece's height (and its offset from the centre) is scaled by their aspects' ratio - drawn as it was,
+        // the reticle came out about twice as tall as wide. (The pane's matrix: rows at 16 and 20, translation 19, 23.)
+        extern bool vr_aim_target(int eye, float target[2], float centre[2]);
         const float *u = (const float *)(uintptr_t)r.addr;
-        float dl[2];
-        if (vr_aim_shift((int)vk_vr_eye(), u, dl)) {
+        NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+        float t[2], c[2];
+        if (rt && rt->height && fabsf(u[0]) > 1e-8f && fabsf(u[5]) > 1e-8f && vr_aim_target((int)vk_vr_eye(), t, c)) {
+            const float layout_aspect = fabsf(u[5] / u[0]), eye_aspect = (float)rt->width / (float)rt->height;
+            const float sy = eye_aspect / layout_aspect;
             VkSpan s = vk_transient_copy(u, size, 256);
-            ((float *)s.ptr)[19] += dl[0];  // (the pane's matrix, rows at 16 and 20: its translation)
-            ((float *)s.ptr)[23] += dl[1];
+            float *o = (float *)s.ptr;
+            const float px = u[0] * u[19] + u[3], py = u[5] * u[23] + u[7];  // (this piece's place, clip)
+            const float nx = t[0] + (px - c[0]), ny = t[1] + (py - c[1]) * sy;
+            o[19] = (nx - u[3]) / u[0];
+            o[23] = (ny - u[7]) / u[5];
+            o[20] *= sy, o[21] *= sy, o[22] *= sy;
             return ubo_span(s, size);
         }
     }
