@@ -49,10 +49,9 @@ static GuestFn g_player_update;
 static float g_shift[3];
 static bool g_shift_on;
 
-static bool sword_drawn(const float *line) {
+static bool sword_drawn(const float *line, const float *e) {
     static bool drawn;
     static int count;
-    const float *e = (const float *)(uintptr_t)PLAYER_EYE;
     const float d[3] = {line[3] - e[0], line[4] - e[1], line[5] - e[2]};
     const float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     const bool want = drawn ? !(dist < SHEATHED_AT) : dist > DRAWN_AT;  // (a margin, and some patience: a swing
@@ -65,8 +64,16 @@ static bool sword_drawn(const float *line) {
 static void player_update_hook(Cpu *c) {
     const uint64_t pl = c->x[0];
     g_player_update(c);
-    // (only Link himself: the update serves other player-like actors too, the title screen's)
-    if (pl != *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF) return;
+    // (only in play, not the title screen's Link the update also serves: his eye point is valid then. Compared with
+    // the actor main+0x18299d0 points to, the hook never acted: in play the update is called with another pointer,
+    // and that one read 0 at the time)
+    // (his eye point as the other actors' updates saw it this frame: during his own update the game's player pointer
+    // and eye point read 0 - runtime/hle/vr_slingshot.c)
+    extern bool vr_player_eye_cached(float eye[3]);
+    float eye[3];
+    if (!vr_player_eye_cached(eye)) return;
+    static int said;
+    if (!said++) LOG("[sword] Link's update in play (called with %llx)\n", (unsigned long long)pl);
     float *line = (float *)(uintptr_t)(pl + SWORD_LINE);  // tip, base, last tip, last base
     if (g_shift_on) {
         for (int p = 0; p < 4; p++) for (int i = 0; i < 3; i++) line[p * 3 + i] += g_shift[i];
@@ -75,7 +82,7 @@ static void player_update_hook(Cpu *c) {
     static float last[6];
     static bool have_last;
     float grip[12];
-    const bool on = g_vr_config.sword_hitbox && g_vr_config.view_mode == 1 && vr_running() && sword_drawn(line) &&
+    const bool on = g_vr_config.sword_hitbox && g_vr_config.view_mode == 1 && vr_running() && sword_drawn(line, eye) &&
                     vr_rig_controller_pose(1, grip);
     if (!on) { have_last = false; return; }
     float blade[6];  // tip, base: along the grip's -z

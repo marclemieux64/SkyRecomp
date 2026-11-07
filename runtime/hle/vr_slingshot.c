@@ -109,8 +109,36 @@ static bool launch_ray(float o[3], float d[3]) {
 }
 static bool launch_dir(float d[3]) { float o[3]; return launch_ray(o, d); }
 
+// Link's eye point, kept from the actors' updates (once a frame): during his own update the game's player pointer and
+// eye point read as 0, so the sword's hook there (vr_sword.c) takes them from here.
+static float g_eye_cache[3];
+static uint64_t g_eye_cache_frame;
+bool vr_player_eye_cached(float eye[3]) {
+    {
+        static uint64_t next;
+        const uint64_t f = renderer_present_count();
+        if (getenv("SKYRECOMP_SWORD_LOG") && f >= next) {
+            next = f + 300;
+            float e[3];
+            const bool live = player_eye(e);
+            LOG("[sword] frame %llu: eye point kept at frame %llu (%.1f %.1f %.1f); player_eye now %d; actor updates %s\n",
+                (unsigned long long)f, (unsigned long long)g_eye_cache_frame, g_eye_cache[0], g_eye_cache[1], g_eye_cache[2],
+                (int)live, g_actor_execute ? "hooked" : "not hooked");
+        }
+    }
+    if (!g_eye_cache_frame || g_eye_cache_frame + 5 < renderer_present_count()) return false;
+    memcpy(eye, g_eye_cache, sizeof g_eye_cache);
+    return true;
+}
+
 static void actor_execute_hook(Cpu *c) {
     const uint64_t a = c->x[0];
+    {
+        static uint64_t at;
+        const uint64_t f = renderer_present_count();
+        float e[3];
+        if (f != at && player_eye(e)) at = f, memcpy(g_eye_cache, e, sizeof e), g_eye_cache_frame = f ? f : 1;
+    }
     g_actor_execute(c);
     if (!a || *(const uint64_t *)(uintptr_t)a != SEED_VTABLE) return;
     float *o = (float *)(uintptr_t)(a + SEED_ORIGIN), *p = (float *)(uintptr_t)(a + SEED_POS), *v = (float *)(uintptr_t)(a + SEED_VEL);
