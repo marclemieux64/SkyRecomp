@@ -2,13 +2,12 @@
 //
 // The game keeps Link's sword as a swept line inside his actor, at +0x66e4 (his actor: the pointer at main+0x18299d0):
 // four world positions - the blade's tip (80 units along the sword model's +X from its hilt), a point near its base
-// (12 units along), and both of last frame's. Its hits are taken from that line: moving it 2 m up (SKYRECOMP_SWORD_SHIFT
-// below) stops a swing from cutting the grass in front of him. Link's update (main+0xab7cf4) writes it every frame;
-// it is called through his vtable, so it can be wrapped (hle_override). Right after it runs, while VR runs in 1st
-// person with the right controller tracked and the sword drawn, the line becomes the blade held by the right
-// controller: along the grip's forward axis (-z, the way a held sword points), from BASE_AT to TIP_AT game units out,
-// this frame's and the last frame's. The game still decides when Link swings (its motion controls); where the blade
-// is when it does is now your hand's.
+// (12 units along), and both of last frame's. A slash's hits are the three attack colliders the update builds from it
+// (SWORD_COLLIDER below). Link's update (main+0xab7cf4) writes both every frame; it is called through his vtable, so it
+// can be wrapped (hle_override). Right after it runs, while VR runs in 1st person with the right controller tracked and
+// the sword drawn, the line and the colliders become the blade held by the right controller: along the grip's forward
+// axis (-z, the way a held sword points), this update's and the last one's. The game still decides when Link swings
+// (its motion controls); where the blade is when it does - what it hits - is now your hand's, Z-targeting or not.
 //
 // Drawn or sheathed comes from the game's own line: sheathed, its base point sits 19-20 units from Link's eye point
 // (main+0x1829a30, runtime/hle/player.c) on his back; drawn, further out in his hand. (Measured in the original
@@ -42,6 +41,18 @@ float vr_rig_units_per_metre(void);
 #define DRAWN_AT 30.0f  // the line's base further than this from Link's eye point: drawn (sheathed: 19-20)
 #define SHEATHED_AT 25.0f
 #define SWING_SPEED 2.0f  // the controller's blade tip faster than this (m/s): its hits are on
+// The sword's three attack colliders (capsules, 0x1f0 apart from Link +0x12c8): what a slash actually hits with. Each
+// holds its capsule's two ends in the world at +0x178 and +0x184 (radius ~45): the first from the blade's base to a point
+// REACH out along it, the second from last update's end point to this one's, the third from the base to last update's
+// end - together the arc the blade swept. The game builds them from its own sword during Link's update and takes their
+// bounds from them only afterwards (the bounds read one update behind right after it), so ends written after the
+// update are the ones its hits use. Measured headset-free: moving them 2 m up keeps a bush in front of Link whole
+// through three slashes; moving only the line at +0x66e4 doesn't (it has already been read by then).
+#define SWORD_COLLIDER 0x12c8
+#define SWORD_COLLIDER_STRIDE 0x1f0
+#define CAPSULE_START 0x178
+#define CAPSULE_END 0x184
+#define REACH_DEFAULT 128.0f  // the game's own: its first capsule ~128 units from the base along the blade
 
 extern bool vr_running(void);
 extern uint64_t renderer_present_count(void);
@@ -78,11 +89,14 @@ static void player_update_hook(Cpu *c) {
     static int said;
     if (!said++) LOG("[sword] Link's update in play (called with %llx)\n", (unsigned long long)pl);
     float *line = (float *)(uintptr_t)(pl + SWORD_LINE);  // tip, base, last tip, last base
-    if (g_shift_on) {
+    float *cap[3];  // the three capsules' ends: start xyz, end xyz
+    for (int k = 0; k < 3; k++) cap[k] = (float *)(uintptr_t)(pl + SWORD_COLLIDER + SWORD_COLLIDER_STRIDE * k + CAPSULE_START);
+    if (g_shift_on) {  // (test: the game's own hits moved by that much - a slash then misses what's in front of Link)
         for (int p = 0; p < 4; p++) for (int i = 0; i < 3; i++) line[p * 3 + i] += g_shift[i];
+        for (int k = 0; k < 3; k++) for (int i = 0; i < 6; i++) cap[k][i] += g_shift[i % 3];
         return;
     }
-    static float last[6];
+    static float last[6], last_end[3];
     static bool have_last;
     float grip[12];
     const bool on = g_vr_config.sword_hitbox && g_vr_config.view_mode == 1 && vr_running() && sword_drawn(line, eye) &&
@@ -99,6 +113,19 @@ static void player_update_hook(Cpu *c) {
     memcpy(game_tip, line, sizeof game_tip);
     memcpy(line, blade, sizeof blade);
     memcpy(line + 6, last, sizeof last);
+    {   // the hits: the three capsules from the blade in your hand, the game's own reach along it
+        static float reach = REACH_DEFAULT;
+        const float gx = cap[0][3] - cap[0][0], gy = cap[0][4] - cap[0][1], gz = cap[0][5] - cap[0][2];
+        const float g = sqrtf(gx * gx + gy * gy + gz * gz);  // (the game's own, while it slashes)
+        if (g > 60.0f && g < 250.0f) reach = g;
+        float end[3];
+        for (int i = 0; i < 3; i++) end[i] = blade[3 + i] - grip[i * 4 + 2] * reach;
+        if (!have_last) memcpy(last_end, end, sizeof end);
+        memcpy(cap[0], blade + 3, 3 * sizeof(float)), memcpy(cap[0] + 3, end, sizeof end);
+        memcpy(cap[1], last_end, sizeof end), memcpy(cap[1] + 3, end, sizeof end);
+        memcpy(cap[2], blade + 3, 3 * sizeof(float)), memcpy(cap[2] + 3, last_end, sizeof end);
+        memcpy(last_end, end, sizeof end);
+    }
     // When the game swings is the game's own slash: the sword's attack colliders (Link +0x12c8, +0x14b8, +0x16a8)
     // are only in its collision checks during one - setting their "attacking" bit outside a slash changed nothing
     // (measured headset-free). So the slash itself is made to follow the blade: while the sword is out the right
