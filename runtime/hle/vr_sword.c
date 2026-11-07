@@ -95,6 +95,8 @@ static void player_update_hook(Cpu *c) {
         blade[3 + i] = grip[i * 4 + 3] - grip[i * 4 + 2] * BASE_AT;
     }
     if (!have_last) memcpy(last, blade, sizeof last);
+    float game_tip[3];  // (the game's own tip, for the log: how far the blade in your hand is from it)
+    memcpy(game_tip, line, sizeof game_tip);
     memcpy(line, blade, sizeof blade);
     memcpy(line + 6, last, sizeof last);
     // When the game swings is the game's own slash: the sword's attack colliders (Link +0x12c8, +0x14b8, +0x16a8)
@@ -127,8 +129,10 @@ static void player_update_hook(Cpu *c) {
     if (log < 0) log = getenv("SKYRECOMP_SWORD_LOG") != NULL;
     if (log && renderer_present_count() >= logged + 120) {
         logged = renderer_present_count();
-        LOG("[sword] hit line from the right controller: tip %.1f %.1f %.1f, base %.1f %.1f %.1f\n", blade[0], blade[1],
-            blade[2], blade[3], blade[4], blade[5]);
+        const float gx = blade[0] - game_tip[0], gy = blade[1] - game_tip[1], gz = blade[2] - game_tip[2];
+        LOG("[sword] hit line from the right controller: tip %.1f %.1f %.1f, base %.1f %.1f %.1f; the game's tip %.1f %.1f %.1f "
+            "(%.0f away); his eye point %.1f %.1f %.1f\n", blade[0], blade[1], blade[2], blade[3], blade[4], blade[5],
+            game_tip[0], game_tip[1], game_tip[2], sqrtf(gx * gx + gy * gy + gz * gz), eye[0], eye[1], eye[2]);
     }
 }
 
