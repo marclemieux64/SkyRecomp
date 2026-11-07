@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <mutex>
 
+extern "C" bool vr_sword_spatial(void);  // runtime/hle/vr_sword.c: the sword out in 1st person, its swings spatial
+
 namespace skyrecomp::vr {
 namespace {
 
@@ -58,6 +60,8 @@ Vec3 rotate(const Quat &q, const Vec3 &v) noexcept {
 Vec3 toPlayerAxes(const Vec3 &v) noexcept { return {v[0], -v[2], v[1]}; }
 
 float clampf(float v, float limit) noexcept { return std::isfinite(v) ? std::clamp(v, -limit, limit) : 0.0f; }
+
+constexpr float SpatialBladeLength = 0.8f;  // metres: the blade's turn from the hand's movement (the game's: 80 units)
 
 }  // namespace
 
@@ -128,8 +132,18 @@ void JoyConTranslator::updateHand(int index, const SkyVrHand &in, const Quat &re
 
     Vec3 gyro{};
     if (in.velocity_valid) {
-        gyro = toJoyCon({angular[0] - h.gyroBias[0], angular[1] - h.gyroBias[1],
-                         angular[2] - h.gyroBias[2]}, q);
+        Vec3 w{angular[0] - h.gyroBias[0], angular[1] - h.gyroBias[1], angular[2] - h.gyroBias[2]};
+        if (index == 1 && vr_sword_spatial()) {
+            // The sword out (runtime/hle/vr_sword.c): the turn its blade makes in space, not the wrist's - the
+            // controller's own turn without its twist about the blade (that doesn't move it), plus the turn the hand's
+            // movement gives a blade of SpatialBladeLength (v x b / L): a swing of the arm, the wrist kept still, is
+            // a slash too, in the way the blade moved; the game's slash then follows where the blade went.
+            const Vec3 b = rotate(q, {0, 0, -1});  // (the blade: where the controller points)
+            const float wb = w[0] * b[0] + w[1] * b[1] + w[2] * b[2];
+            const Vec3 bv{b[1] * linear[2] - b[2] * linear[1], b[2] * linear[0] - b[0] * linear[2], b[0] * linear[1] - b[1] * linear[0]};
+            for (int i = 0; i < 3; i++) w[i] = w[i] - wb * b[i] + bv[i] / SpatialBladeLength;
+        }
+        gyro = toJoyCon(w, q);
         const Vec3 v{in.linear_velocity[0], in.linear_velocity[1], in.linear_velocity[2]};
         if (h.haveVelocity && dt > 0.0005f && dt < 0.1f) {
             const float tau = accel_smooth_s();

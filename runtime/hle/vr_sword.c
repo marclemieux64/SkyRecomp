@@ -19,6 +19,7 @@
 // "sword hit line"). Diagnostics: SKYRECOMP_SWORD_LOG=1 logs what is written every 120 frames.
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -46,6 +47,8 @@ extern bool vr_running(void);
 extern uint64_t renderer_present_count(void);
 
 static GuestFn g_player_update;
+static _Atomic bool g_spatial;  // (the sword out in 1st person: the Joy-Con's turn is the blade's - JoyConTranslator)
+bool vr_sword_spatial(void) { return atomic_load(&g_spatial); }
 static float g_shift[3];
 static bool g_shift_on;
 
@@ -84,6 +87,7 @@ static void player_update_hook(Cpu *c) {
     float grip[12];
     const bool on = g_vr_config.sword_hitbox && g_vr_config.view_mode == 1 && vr_running() && sword_drawn(line, eye) &&
                     vr_rig_controller_pose(1, grip);
+    atomic_store(&g_spatial, on && g_vr_config.sword_swing_hits);
     if (!on) { have_last = false; return; }
     float blade[6];  // tip, base: along the grip's -z
     for (int i = 0; i < 3; i++) {
@@ -93,11 +97,11 @@ static void player_update_hook(Cpu *c) {
     if (!have_last) memcpy(last, blade, sizeof last);
     memcpy(line, blade, sizeof blade);
     memcpy(line + 6, last, sizeof last);
-    // The hits themselves when the blade moves, not when the game reads a slash from the Joy-Con's motion: the sword's
-    // three attack colliders (Link +0x12c8, +0x14b8, +0x16a8: 0x1f0 apart) carry an "attacking" bit (bit 0) that the
-    // game sets only for its slash's cutting frames (measured headset-free: set exactly while the slash's tip moved
-    // fast, 25-90 units an update, clear before and after). Set here too whenever the controller's tip moves faster
-    // than SWING_SPEED, so whatever the blade sweeps through is hit whether or not the game recognised a slash.
+    // When the game swings is the game's own slash: the sword's attack colliders (Link +0x12c8, +0x14b8, +0x16a8)
+    // are only in its collision checks during one - setting their "attacking" bit outside a slash changed nothing
+    // (measured headset-free). So the slash itself is made to follow the blade: while the sword is out the right
+    // Joy-Con's turn the game reads is the blade's turn in space (g_spatial; runtime/nvn/vulkan/JoyConTranslator.cpp),
+    // the arm's swing included, rather than the wrist's.
     {
         static uint64_t last_ns;
         const uint64_t now_ns = SDL_GetTicksNS();
@@ -105,19 +109,15 @@ static void player_update_hook(Cpu *c) {
         last_ns = now_ns;
         const float dx = blade[0] - last[0], dy = blade[1] - last[1], dz = blade[2] - last[2];
         const float speed = dt > 0 && dt < 0.25f ? sqrtf(dx * dx + dy * dy + dz * dz) / dt / vr_rig_units_per_metre() : 0.0f;
-        static const uint32_t at_flags[3] = {0x12c8, 0x14b8, 0x16a8};
-        if (speed > SWING_SPEED && g_vr_config.sword_swing_hits) {
-            for (int k = 0; k < 3; k++) *(volatile uint32_t *)(uintptr_t)(pl + at_flags[k]) |= 1u;
-        }
         static int log = -1;
-        static uint64_t logged, swings, frames;
+        static uint64_t logged, fast, frames;
         if (log < 0) log = getenv("SKYRECOMP_SWORD_LOG") != NULL;
-        frames++, swings += speed > SWING_SPEED;
+        frames++, fast += speed > SWING_SPEED;
         if (log && renderer_present_count() >= logged + 120) {
             logged = renderer_present_count();
-            LOG("[sword] blade tip %.2f m/s now; hits on from the blade in %llu of %llu updates\n", speed,
-                (unsigned long long)swings, (unsigned long long)frames);
-            swings = frames = 0;
+            LOG("[sword] blade tip %.2f m/s now; faster than %.1f m/s in %llu of %llu updates\n", speed, SWING_SPEED,
+                (unsigned long long)fast, (unsigned long long)frames);
+            fast = frames = 0;
         }
     }
     memcpy(last, blade, sizeof last);
