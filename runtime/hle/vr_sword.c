@@ -67,11 +67,11 @@ static void player_update_hook(Cpu *c) {
     // (only in play, not the title screen's Link the update also serves: his eye point is valid then. Compared with
     // the actor main+0x18299d0 points to, the hook never acted: in play the update is called with another pointer,
     // and that one read 0 at the time)
-    // (his eye point as the other actors' updates saw it this frame: during his own update the game's player pointer
-    // and eye point read 0 - runtime/hle/vr_slingshot.c)
-    extern bool vr_player_eye_cached(float eye[3]);
+    // (his eye point - read as the game has it; failing that, as the other actors' updates saw it this frame,
+    // runtime/hle/vr_slingshot.c. With VR off this build's player pointer and eye point read 0)
+    extern bool player_eye(float eye[3]), vr_player_eye_cached(float eye[3]);
     float eye[3];
-    if (!vr_player_eye_cached(eye)) return;
+    if (!player_eye(eye) && !vr_player_eye_cached(eye)) return;
     static int said;
     if (!said++) LOG("[sword] Link's update in play (called with %llx)\n", (unsigned long long)pl);
     float *line = (float *)(uintptr_t)(pl + SWORD_LINE);  // tip, base, last tip, last base
