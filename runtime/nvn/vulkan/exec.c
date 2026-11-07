@@ -2804,6 +2804,8 @@ static bool g_aim_draw;
 static NvnTexture *g_aim_depth;
 static uint64_t g_aim_main_frame[2] = {~0ull, ~0ull};
 static uint32_t g_aim_main_w[2];
+static float g_aim_vp[4];  // (eye 0's main view: its viewport, game units of its depth target)
+static int g_skin_bone_idx = -1;  // (the draw being set up is the Slingshot: its bones' uniform slot - vr_rig.c)
 static bool aim_main_target(int eye) {
     NvnTexture *t = st.rt.depth;
     if (!t || eye < 0 || eye > 1) return false;
@@ -2811,7 +2813,12 @@ static bool aim_main_target(int eye) {
     if (g_aim_main_frame[eye] != f) g_aim_main_w[eye] = 0, g_aim_main_frame[eye] = f;
     if (t->width < g_aim_main_w[eye]) return false;
     g_aim_main_w[eye] = t->width;
-    if (eye == 0) g_aim_depth = t;
+    if (eye == 0) {
+        g_aim_depth = t;
+        // (the part of it the scene is drawn into: the game's dynamic resolution draws a smaller frame into a corner
+        // of its targets - the probe's points are in that frame, not across the whole image)
+        memcpy(g_aim_vp, st.viewport[0], sizeof g_aim_vp);
+    }
     return true;
 }
 
@@ -2868,13 +2875,37 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // uniform through the strict camera classifier so those screen-space effects use the same eye as their geometry.
     // Guest memory keeps the game's mono camera.
     if (g_aim_draw && stage == 0 && idx == 0 && size >= 96) {  // VR aiming: a reticle piece, moved to the shot's end point
-        extern bool vr_aim_shift(int eye, const float proj[16], float delta[2]);
+        // Each piece keeps its place around the reticle's centre (one centre per frame), the centre going to the end
+        // point in this eye's picture. The layout is the game's 16:9 screen; the headset's eye image is nearly square,
+        // so the piece's height (and its offset from the centre) is scaled by their aspects' ratio - drawn as it was,
+        // the reticle came out about twice as tall as wide. (The headset's eye size, not this target's: the picture
+        // drawn here may be game-shaped and reshaped into the eye image later.) (The pane's matrix: rows at 16 and
+        // 20, translation 19, 23.)
+        extern bool vr_aim_target(int eye, float target[2], float centre[2]);
+        extern float vr_eye_aspect(void);
         const float *u = (const float *)(uintptr_t)r.addr;
-        float dl[2];
-        if (vr_aim_shift((int)vk_vr_eye(), u, dl)) {
+        const float eye_aspect = vr_eye_aspect();
+        float t[2], c[2];
+        if (eye_aspect > 0 && fabsf(u[0]) > 1e-8f && fabsf(u[5]) > 1e-8f && vr_aim_target((int)vk_vr_eye(), t, c)) {
+            // (the shape it has on the game's screen: its viewport's - 1920x1080 here, stretched whole into the eye
+            // image by vr_record_eye_copies. The layout's own units aren't square - 1.333 - so not those.)
+            NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+            const float screen_aspect = st.viewport[0][2] > 0 && st.viewport[0][3] > 0 ? st.viewport[0][2] / st.viewport[0][3]
+                                        : rt && rt->height ? (float)rt->width / (float)rt->height : 16.0f / 9.0f;
+            {
+                static int said;
+                if (said++ < 2) LOG("[aim] reticle in the eyes: screen aspect %.3f (viewport %.0fx%.0f), eye image %.3f, target %ux%u\n",
+                                    screen_aspect, st.viewport[0][2], st.viewport[0][3], eye_aspect, rt ? rt->width : 0,
+                                    rt ? rt->height : 0);
+            }
+            const float sy = eye_aspect / screen_aspect;
             VkSpan s = vk_transient_copy(u, size, 256);
-            ((float *)s.ptr)[19] += dl[0];  // (the pane's matrix, rows at 16 and 20: its translation)
-            ((float *)s.ptr)[23] += dl[1];
+            float *o = (float *)s.ptr;
+            const float px = u[0] * u[19] + u[3], py = u[5] * u[23] + u[7];  // (this piece's place, clip)
+            const float nx = t[0] + (px - c[0]), ny = t[1] + (py - c[1]) * sy;
+            o[19] = (nx - u[3]) / u[0];
+            o[23] = (ny - u[7]) / u[5];
+            o[20] *= sy, o[21] *= sy, o[22] *= sy;
             return ubo_span(s, size);
         }
     }
@@ -2922,6 +2953,24 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 memcpy(patched.ptr, camera, sizeof camera);
             }
             return ubo_span(patched, size);
+        }
+    }
+    if (stage == 0 && idx == g_skin_bone_idx && size >= 48) {  // (the Slingshot's bones: moved with its hand - vr_rig.c)
+        extern bool vr_rig_skin_transform(float T[12]);
+        float T[12];
+        if (vr_rig_skin_transform(T)) {
+            VkSpan s = vk_transient_copy((const void *)(uintptr_t)r.addr, size, 256);
+            float *b = s.ptr;
+            const uint64_t nb = (r.size < size ? r.size : size) / 48;
+            for (uint64_t i = 0; i < nb; i++) {
+                float o[12];
+                for (int row = 0; row < 3; row++)
+                    for (int col = 0; col < 4; col++)
+                        o[row * 4 + col] = T[row * 4] * b[i * 12 + col] + T[row * 4 + 1] * b[i * 12 + 4 + col] +
+                                           T[row * 4 + 2] * b[i * 12 + 8 + col] + (col == 3 ? T[row * 4 + 3] : 0);
+                memcpy(b + i * 12, o, sizeof o);
+            }
+            return ubo_span(s, size);
         }
     }
     if (stage <= 1 && idx >= 1 && vr_stereo_active() && size >= 48 && size <= 0x2000) {
@@ -4319,8 +4368,21 @@ static void aim_probe(void) {
     const int n = vr_aim_probe(s, u, v, 64, nvn_window_origin() == 0, nvn_depth_mode() == 0);
     if (n <= 0) return;
     VkBufferImageCopy rg[64];
+    // (u, v are in the scene's viewport: to the image's pixels through it - game units of the target, scaled to the
+    // backend's size, which a render scale makes larger)
+    const float tw = g_aim_depth->width ? (float)g_aim_depth->width : 1, th = g_aim_depth->height ? (float)g_aim_depth->height : 1;
+    const bool vp_ok = g_aim_vp[2] > 0 && g_aim_vp[3] > 0;
+    const float vx = vp_ok ? g_aim_vp[0] : 0, vy = vp_ok ? g_aim_vp[1] : 0, vw = vp_ok ? g_aim_vp[2] : tw, vh = vp_ok ? g_aim_vp[3] : th;
+    {   // (when the scene's viewport changes: at most 20 times)
+        static int said;
+        static float last_vw, last_vh;
+        if ((vw != last_vw || vh != last_vh) && said++ < 20)
+            LOG("[aim] depth probe: target %ux%u (backend %ux%u), scene viewport %.0f %.0f %.0f %.0f\n", g_aim_depth->width,
+                g_aim_depth->height, b->width, b->height, vx, vy, vw, vh);
+        last_vw = vw, last_vh = vh;
+    }
     for (int i = 0; i < n; i++) {
-        int x = (int)(u[i] * b->width), y = (int)(v[i] * b->height);
+        int x = (int)((vx + u[i] * vw) / tw * b->width), y = (int)((vy + v[i] * vh) / th * b->height);
         x = x < 0 ? 0 : x >= (int)b->width ? (int)b->width - 1 : x;
         y = y < 0 ? 0 : y >= (int)b->height ? (int)b->height - 1 : y;
         rg[i] = (VkBufferImageCopy){.bufferOffset = (VkDeviceSize)(s * 512 + i * 4),
@@ -4338,11 +4400,14 @@ static void aim_probe(void) {
 // (hud_route) An aiming item's reticle piece in a frame with the 3D scene: true when it's drawn in each eye's own
 // picture, moved to the shot's end point (cbuf_info, g_aim_draw) rather than on the HUD panel. Not in a multiview
 // pass (one recording for both eyes: it can't move per eye) - it stays on the panel then.
-static bool aim_piece(Prog *pr, bool mv) {
-    extern bool vr_aim_enabled(void), vr_aim_ready(void);
-    extern void vr_aim_center(float x, float y);
+// 1: drawn in the eyes; -1: not drawn at all (the Slingshot's, aimed with the controller: its own marker instead -
+// runtime/hle/vr_slingshot.c, runtime/vr/vr.c); 0: an ordinary 2D draw.
+static int aim_piece(Prog *pr, bool mv) {
+    extern bool vr_aim_enabled(void), vr_aim_ready(void), vr_aim_slingshot(void);
+    extern void vr_aim_center(float x, float y), vr_aim_slingshot_seen(void);
     extern const char *texpatch_aim_name(int id);
-    if (mv || !vr_aim_enabled() || !g_scene_since_present || vr_world_menu_active()) return false;
+    // (the reticle's centre is noted with the 3D reticle off too: aiming with the controller follows it)
+    if (mv || !g_scene_since_present || vr_world_menu_active()) return 0;
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
@@ -4351,28 +4416,41 @@ static bool aim_piece(Prog *pr, bool mv) {
         // (plain circles - the Slingshot's dot - only after a real reticle piece this frame: other screens use them)
         static uint64_t piece_frame[2] = {~0ull, ~0ull};
         const int eye = (int)vk_vr_eye() & 1;
+        // (this frame's or the last: the dot may be drawn before the other pieces - then it stayed on the HUD panel, a
+        // flat reticle of its own beside the one in the world)
         if (strncmp(nm, "th_circle", 9)) piece_frame[eye] = renderer_present_count();
-        else if (piece_frame[eye] != renderer_present_count()) return false;
+        else if (piece_frame[eye] == ~0ull || piece_frame[eye] + 1 < renderer_present_count()) return 0;
+        if (!strncmp(nm, "th_sling", 8)) vr_aim_slingshot_seen();
+        const bool sling = vr_aim_slingshot() && (!strncmp(nm, "th_sling", 8) || !strncmp(nm, "th_circle", 9));
         const float *u = (const float *)(uintptr_t)st.ubuf[0][0].addr;  // (is_hud_draw: the 192-byte 2D block)
         if (!eye) {
             // its centre: an unrotated piece (the ring, the dot; the arrows are turned 45 degrees)
             if (fabsf(u[17]) < 1e-4f && fabsf(u[20]) < 1e-4f) vr_aim_center(u[0] * u[19] + u[3], u[5] * u[23] + u[7]);
-            aim_probe();
+            if (vr_aim_enabled() || sling) aim_probe();
         }
-        if (!vr_aim_ready()) return false;  // (no end point or eye camera yet: on the panel, as before)
+        if (sling) {
+            static int said;
+            if (!said++) LOG("[vr] aiming: the Slingshot's reticle is replaced by the marker where the seed will land\n");
+            return -1;
+        }
+        if (!vr_aim_enabled()) return 0;
+        if (!vr_aim_ready()) return 0;  // (no end point or eye camera yet: on the panel, as before)
         g_aim_draw = true;
         static int said;
         if (!said++) LOG("[vr] aiming: the reticle (%s) is drawn at the shot's end point\n", nm);
-        return true;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
 // (draw_, its program known) Where a 2D-layer draw goes. Some of the 2D layer's draws composite the 3D scene
 // (bloom, the title's haze): they read a texture made from this frame's scene and stay
 // in the eyes. The rest renders once, in eye 0, into the HUD texture; eye 1 skips it. False: skip the draw.
 static bool hud_route(Prog *pr, bool mv) {
-    if (aim_piece(pr, mv)) return true;  // (an aiming reticle: in the eyes, at the shot's end point)
+    {   // (an aiming reticle: in the eyes, at the shot's end point - or the Slingshot's, not drawn: its marker instead)
+        const int aim = aim_piece(pr, mv);
+        if (aim) return aim > 0;
+    }
     const uint64_t fr1 = renderer_present_count() + 1;
     const uint64_t fs = st.program ? st.program->stages[1].code_addr : 0;
     const uint64_t fs_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
@@ -4693,6 +4771,20 @@ static void draw_(CmdRec *r, bool indexed) {
                     const int e = vk_vr_eye() ? 1 : 0;
                     n[e][0] += hand >= 0, n[e][1] += held, n[e][2] += r->x[2] == 1056;
                 }
+            }
+        }
+        g_skin_bone_idx = -1;
+        if (skinned && cam.addr) {  // (the Slingshot in his hand, moved with it - vr_rig.c; RE: SKYRECOMP_VR_HAND_LOG)
+            extern void vr_rig_skinned_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes, uint64_t count);
+            extern bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes,
+                                              uint64_t count);
+            for (int idx = 3; idx <= 5; idx++) {
+                if (!(pr->vi->cbuf_mask & (1u << (idx + 3))) || !st.ubuf[0][idx].addr) continue;
+                const float *bones = (const float *)(uintptr_t)st.ubuf[0][idx].addr;
+                if (!vk_vr_eye()) vr_rig_skinned_note((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]);
+                if (vr_rig_held_skin_draw((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]))
+                    g_skin_bone_idx = idx;
+                break;
             }
         }
         if (!skinned && cam.addr) {  // (the door held open in VR: its leaf turned - vr_rig.c)

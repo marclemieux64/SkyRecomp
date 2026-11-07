@@ -25,6 +25,7 @@
 #include "../vr/vr_hud.h"
 
 bool game_camera_view(float view[12]);  // runtime/hle/player.c: the game camera (world -> camera), as this frame's
+bool vr_rig_controller_aim(float o[3], float d[3]);  // runtime/vr/vr_rig.c: the right controller's ray, game world
 extern uint64_t renderer_present_count(void);
 
 #define NS 48
@@ -34,7 +35,25 @@ static float g_eye[2][16], g_game[16];  // eye k's camera (game camera space -> 
 static uint64_t g_eye_frame[2] = {~0ull, ~0ull};
 static float g_center[2];               // the reticle's centre on the game's screen (NDC), from its unrotated pieces
 static uint64_t g_center_frame = ~0ull;
-static struct { float w[NS][3], d[NS]; bool ok[NS]; int n; } g_probe[2];  // per probe slot (exec.c)
+static struct { float w[NS][3], d[NS], t[NS]; bool ok[NS]; int n; } g_probe[2];  // per probe slot (exec.c): points, depth, path length
+int vr_slingshot_path(float (*pts)[3], int n, float max_len);  // runtime/hle/vr_slingshot.c
+bool vr_slingshot_on(void);
+static uint64_t g_sling_frame = ~0ull;
+void vr_aim_slingshot_seen(void) { g_sling_frame = renderer_present_count(); }  // (exec.c: its reticle is on screen)
+// The Slingshot aimed with the controller: its seed's flight is probed (vr_slingshot_path) and the marker shown there
+bool vr_aim_slingshot(void) {
+    return g_sling_frame != ~0ull && g_sling_frame + 10 >= renderer_present_count() && vr_slingshot_on();
+}
+// (the probe's points as a path: the point at path length t, between its samples)
+static void probe_point(int slot, float t, float out[3]) {
+    const int n = g_probe[slot].n;
+    const float (*w)[3] = (const float (*)[3])g_probe[slot].w;
+    const float *ts = g_probe[slot].t;
+    int i = 1;
+    while (i < n - 1 && ts[i] < t) i++;
+    const float span = ts[i] - ts[i - 1], f = span > 0 ? fminf(1, fmaxf(0, (t - ts[i - 1]) / span)) : 1;
+    for (int j = 0; j < 3; j++) out[j] = w[i - 1][j] + (w[i][j] - w[i - 1][j]) * f;
+}
 static float g_P[3];                    // the end point, world
 static uint64_t g_P_frame = ~0ull;
 
@@ -105,13 +124,38 @@ static bool aim_line(const float V[12], float o[3], float d[3]) {
 int vr_aim_probe(int slot, float u[], float v[], int max, bool flip_y, bool minus_one) {
     uint64_t f = renderer_present_count();
     float o[3], d[3], V[12];
-    if (slot < 0 || slot > 1 || g_eye_frame[0] == ~0ull || g_eye_frame[0] + 1 < f || !game_camera_view(V) || !aim_line(V, o, d))
+    if (slot < 0 || slot > 1 || g_eye_frame[0] == ~0ull || g_eye_frame[0] + 1 < f || !game_camera_view(V))
         return 0;
+    // Aiming with the controller: along its ray - it starts at the hand, in the left eye's view from the start. The
+    // game camera's line starts wherever that camera is (in VR not at the eyes): its first stretch fell outside the
+    // left eye's picture, so where it went behind a surface there was missed ("nothing hit", the reticle far off).
+    // The game is then aimed at the point found (vr_aim_pointer): the reticle and the shot meet there.
+    // The Slingshot (vr_slingshot.c): along its seed's flight from where it would start, falling after a while.
+    static float path[256][3], cum[256];
+    int np = vr_aim_slingshot() ? vr_slingshot_path(path, 256, RANGE_FAR) : 0;
+    if (np >= 2) {
+        cum[0] = 0;
+        for (int i = 1; i < np; i++) {
+            const float dx = path[i][0] - path[i - 1][0], dy = path[i][1] - path[i - 1][1], dz = path[i][2] - path[i - 1][2];
+            cum[i] = cum[i - 1] + sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+    } else if (!(g_vr_hud_config.aim_with_controller && vr_rig_controller_aim(o, d)) && !aim_line(V, o, d)) {
+        return 0;
+    }
+    const float far = np >= 2 ? fminf(RANGE_FAR, cum[np - 1]) : RANGE_FAR;
     int n = NS < max ? NS : max;
     for (int i = 0; i < n; i++) {
-        float t = RANGE_NEAR * powf(RANGE_FAR / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
+        float t = RANGE_NEAR * powf(far / RANGE_NEAR, (float)i / (float)(n - 1)), c[3], k[4];
         float *w = g_probe[slot].w[i];
-        for (int j = 0; j < 3; j++) w[j] = o[j] + d[j] * t;
+        g_probe[slot].t[i] = t;
+        if (np >= 2) {  // (the flight's point at path length t)
+            int s = 1;
+            while (s < np - 1 && cum[s] < t) s++;
+            const float span = cum[s] - cum[s - 1], f = span > 0 ? fminf(1, fmaxf(0, (t - cum[s - 1]) / span)) : 1;
+            for (int j = 0; j < 3; j++) w[j] = path[s - 1][j] + (path[s][j] - path[s - 1][j]) * f;
+        } else {
+            for (int j = 0; j < 3; j++) w[j] = o[j] + d[j] * t;
+        }
         to_cam(V, w, c);
         bool ok = to_clip(g_eye[0], c, k);
         float x = ok ? k[0] / k[3] : 0, y = ok ? k[1] / k[3] : 0, z = ok ? k[2] / k[3] : 0;
@@ -141,9 +185,25 @@ void vr_aim_result(int slot, const float scene[], int n) {
         if (s + 1e-6f < a) continue;         // (behind something nearer than the line here: not on the line)
         hit = i, frac = b > a ? (s - a) / (b - a) : 1;
     }
-    const float (*w)[3] = (const float (*)[3])g_probe[slot].w;
-    if (hit < 0) memcpy(g_P, w[n - 1], 12);
-    else for (int j = 0; j < 3; j++) g_P[j] = w[hit - 1][j] + (w[hit][j] - w[hit - 1][j]) * fminf(1, fmaxf(0, frac));
+    // The distance along the line, steadied: the end point flipped between a surface a few hundred units off and
+    // "nothing hit" (the range's end) from one probe to the next, and every flip moved the reticle and re-aimed the
+    // game. After a hit, "nothing" counts from its third time in a row; small changes are eased, big ones (onto
+    // another surface) taken at once.
+    static float steady_t = -1;
+    static int misses;
+    float t_new;
+    const float t_end = g_probe[slot].t[n - 1];  // (the path's end: the range, or where the seed's flight ends)
+    if (hit < 0) {
+        t_new = steady_t > 0 && steady_t < t_end * 0.99f && ++misses < 3 ? steady_t : t_end;
+    } else {
+        misses = 0;
+        const float t0 = g_probe[slot].t[hit - 1], t1 = g_probe[slot].t[hit];
+        t_new = t0 + (t1 - t0) * fminf(1, fmaxf(0, frac));
+    }
+    const float t = steady_t > 0 && t_new < steady_t * 1.5f && steady_t < t_new * 1.5f
+                        ? expf(logf(steady_t) * 0.6f + logf(t_new) * 0.4f) : t_new;
+    steady_t = t;
+    probe_point(slot, fminf(t, t_end), g_P);
     g_P_frame = renderer_present_count();
     static int log = -1;
     if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
@@ -156,6 +216,73 @@ void vr_aim_result(int slot, const float scene[], int n) {
     }
 }
 
+// ---------------------------------------------------------------- aiming with the controller
+// The game aims an item with the right Joy-Con's orientation, as a pointer: the reticle sits where it points on the
+// screen, the camera turning when it points past an edge, relative to a centre it sets itself - hard to hit with
+// in VR, where the screen is the game camera and not where the controller points. Instead the game is told the
+// orientation that puts its reticle where the right controller's ray meets the game's screen (vr_controls.c
+// aim_pointer, with the menu pointer's mapping vr_pointer_direction): the shot goes where the controller points.
+// Off the screen the reticle is sent past that edge and the game turns its camera there. The mapping's centre may
+// sit elsewhere (the game sets its own when the item comes out), so where the reticle really is (vr_aim_center)
+// is compared with where it should be and the difference fed back, slowly, while both are on screen.
+// VR Options > Aim Items with the Controller ([VR] aim_with_controller); SKYRECOMP_AIM_LOG=1 logs it.
+#define AIM_FAR 3000.0f     // (the ray's point that is put on the screen: far enough that its origin hardly matters)
+#define AIM_GAIN 0.12f      // (of the reticle's error fed back per game frame)
+#define AIM_BIAS_MAX 0.6f
+bool vr_aim_pointer(float *u_out, float *v_out) {
+    static float bias[2];
+    static uint64_t last;
+    const uint64_t f = renderer_present_count();
+    // The Slingshot aimed with the controller (vr_slingshot.c): its shot goes where the hand points whatever the game
+    // aims at, so the game is held still - its pointer at the screen's centre - rather than turning its camera and
+    // its aim with the controller's motion (the controls felt like the gyro's, not the hand's place).
+    if (g_vr_hud_config.aim_with_controller && vr_aim_slingshot()) {
+        *u_out = 0.5f, *v_out = 0.5f;
+        bias[0] = bias[1] = 0;
+        return true;
+    }
+    if (!g_vr_hud_config.aim_with_controller || g_center_frame == ~0ull || g_center_frame + 10 < f) {
+        bias[0] = bias[1] = 0;  // (no reticle on screen: the next item starts afresh)
+        return false;
+    }
+    float o[3], d[3], V[12], c[3], k[4];
+    if (!vr_rig_controller_aim(o, d) || !game_camera_view(V) || !(fabsf(g_game[0]) > 1e-4f && fabsf(g_game[5]) > 1e-4f))
+        return false;
+    // (where the controller's ray meets the world - the 3D reticle's point, from its ray: vr_aim_probe - else far along it)
+    float p[3] = {o[0] + d[0] * AIM_FAR, o[1] + d[1] * AIM_FAR, o[2] + d[2] * AIM_FAR};
+    if (g_P_frame != ~0ull && g_P_frame + 10 >= f) memcpy(p, g_P, sizeof p);
+    to_cam(V, p, c);
+    float x, y;
+    if (to_clip(g_game, c, k)) x = k[0] / k[3], y = k[1] / k[3];
+    else x = c[0] > 0 ? 4.0f : -4.0f, y = c[1] > 0 ? 4.0f : -4.0f;  // (behind the camera: past the edge it's on)
+    extern int nvn_window_origin(void);
+    const bool flip = nvn_window_origin() == 0;  // (the screen's rows run down; clip y up unless the origin is the top)
+    const float want[2] = {x * 0.5f + 0.5f, (flip ? -y : y) * 0.5f + 0.5f};
+    const float now[2] = {g_center[0] * 0.5f + 0.5f, (flip ? -g_center[1] : g_center[1]) * 0.5f + 0.5f};
+    const bool inside = want[0] > 0.05f && want[0] < 0.95f && want[1] > 0.05f && want[1] < 0.95f &&
+                        now[0] > 0.02f && now[0] < 0.98f && now[1] > 0.02f && now[1] < 0.98f;
+    if (f != last && inside && g_center_frame + 2 >= f)
+        for (int i = 0; i < 2; i++) bias[i] = fmaxf(-AIM_BIAS_MAX, fminf(AIM_BIAS_MAX, bias[i] + AIM_GAIN * (want[i] - now[i])));
+    last = f;
+    *u_out = fmaxf(-0.4f, fminf(1.4f, want[0] + bias[0]));
+    *v_out = fmaxf(-0.4f, fminf(1.4f, want[1] + bias[1]));
+    static int log = -1;
+    static uint64_t logged;
+    if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
+    if (log && f >= logged + 60)
+        logged = f, LOG("[aim] controller: wants %.3f %.3f, reticle at %.3f %.3f, correction %.3f %.3f\n", want[0], want[1],
+                        now[0], now[1], bias[0], bias[1]);
+    return true;
+}
+
+// (runtime/vr/vr.c, each headset frame) Where the Slingshot's seed will land (world), for its marker. False: not
+// aiming the Slingshot with the controller, or no landing point yet.
+bool vr_aim_marker(float p[3]) {
+    if (!vr_aim_slingshot() || g_P_frame == ~0ull || g_P_frame + 10 < renderer_present_count()) return false;
+    memcpy(p, g_P, sizeof g_P);
+    return true;
+}
+
 // (exec.c) An end point and both eyes' cameras, recent: the reticle can go to the eyes (else it stays on the panel,
 // the same in both eyes)
 bool vr_aim_ready(void) {
@@ -164,25 +291,46 @@ bool vr_aim_ready(void) {
            g_eye_frame[1] != ~0ull && g_eye_frame[1] + 1 >= f;
 }
 
-// The reticle's pieces in eye `eye`: how far to move them (layout units, x and y), given their projection `proj` (the
-// 2D layout's: row-major 4x4). False: no end point yet - leave them where the game puts them.
-bool vr_aim_shift(int eye, const float proj[16], float delta[2]) {
-    uint64_t f = renderer_present_count();
-    float V[12], c[3], ke[4], kg[4];
+// The reticle in eye `eye`: where its centre goes in that eye's picture (clip x, y) and where its centre is now on
+// the game's screen (clip x, y; once per frame, so every piece of a frame moves together - with each piece moved by
+// the game's own projection of the end point instead, the game's reticle lagging the controller put the pieces off
+// it, and a centre changing mid-frame pulled them apart). False: no end point yet.
+bool vr_aim_target(int eye, float target[2], float centre[2]) {
+    static uint64_t latch_frame = ~0ull;
+    static float latch[2];
+    const uint64_t f = renderer_present_count();
+    float V[12], c[3], ke[4];
     if (eye < 0 || eye > 1 || g_P_frame == ~0ull || g_P_frame + 10 < f || g_eye_frame[eye] == ~0ull || g_eye_frame[eye] + 1 < f ||
-        !game_camera_view(V) || !(fabsf(proj[0]) > 1e-6f && fabsf(proj[5]) > 1e-6f))
+        g_center_frame == ~0ull || g_center_frame + 10 < f || !game_camera_view(V))
         return false;
-    to_cam(V, g_P, c);
-    if (!to_clip(g_eye[eye], c, ke) || !to_clip(g_game, c, kg)) return false;
-    delta[0] = (ke[0] / ke[3] - kg[0] / kg[3]) / proj[0];
-    delta[1] = (ke[1] / ke[3] - kg[1] / kg[3]) / proj[5];
+    if (latch_frame != f) latch_frame = f, latch[0] = g_center[0], latch[1] = g_center[1];
+    // On the game's own aim - the line from its camera through its reticle, where the shot goes - at the end point's
+    // depth along it: the end point is on the controller's ray, which the game's reticle follows a frame or two late,
+    // so drawn there the reticle in the world and the shot (and the game's reticle) parted while the hand moved.
+    float P[3];
+    memcpy(P, g_P, sizeof P);
+    if (fabsf(g_game[0]) > 1e-4f && fabsf(g_game[5]) > 1e-4f) {
+        float o[3], d[3];
+        for (int i = 0; i < 3; i++) o[i] = -(V[i] * V[3] + V[4 + i] * V[7] + V[8 + i] * V[11]);  // (its position: -R^T t)
+        const float k[3] = {(latch[0] + g_game[2]) / g_game[0], (latch[1] + g_game[6]) / g_game[5], -1};
+        for (int i = 0; i < 3; i++) d[i] = V[i] * k[0] + V[4 + i] * k[1] + V[8 + i] * k[2];  // (R^T: camera to world)
+        const float n = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (n > 0) {
+            float along = 0;
+            for (int i = 0; i < 3; i++) d[i] /= n, along += (g_P[i] - o[i]) * d[i];
+            if (along > RANGE_NEAR) for (int i = 0; i < 3; i++) P[i] = o[i] + d[i] * along;
+        }
+    }
+    to_cam(V, P, c);
+    if (!to_clip(g_eye[eye], c, ke)) return false;
+    target[0] = ke[0] / ke[3], target[1] = ke[1] / ke[3];
+    centre[0] = latch[0], centre[1] = latch[1];
     static int log = -1;
     static uint64_t logged[2];
     if (log < 0) log = getenv("SKYRECOMP_AIM_LOG") != NULL;
-    if (log && f >= logged[eye] + 60) {
-        logged[eye] = f;
-        LOG("[aim] frame %llu eye %d: end point at %.4f %.4f in its picture (the game's %.4f %.4f), %.1f deep\n",
-            (unsigned long long)f, eye, ke[0] / ke[3], ke[1] / ke[3], kg[0] / kg[3], kg[1] / kg[3], ke[3]);
-    }
-    return isfinite(delta[0]) && isfinite(delta[1]);
+    if (log && f >= logged[eye] + 60)
+        logged[eye] = f, LOG("[aim] frame %llu eye %d: end point at %.4f %.4f in its picture, %.1f deep; reticle centre %.4f %.4f\n",
+                             (unsigned long long)f, eye, target[0], target[1], ke[3], centre[0], centre[1]);
+    return isfinite(target[0]) && isfinite(target[1]);
 }
+

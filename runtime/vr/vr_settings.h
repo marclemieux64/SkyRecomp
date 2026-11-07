@@ -83,6 +83,11 @@ typedef struct VRConfig {
         = true
 #endif
         ;                                // 1st person: the sword's hits follow the blade in your right hand (hle/vr_sword.c)
+    bool sword_swing_hits
+#ifdef __cplusplus
+        = true
+#endif
+        ;                                // ... and they're on whenever the blade moves fast, not only in the game's slashes
 } VRConfig;
 
 // Always contains a validated configuration. LoadVRConfig resets it to defaults first.

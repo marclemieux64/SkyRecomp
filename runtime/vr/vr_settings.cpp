@@ -120,6 +120,7 @@ std::vector<std::string> vr_lines() {
             "turn_mode = " + std::to_string(g_vr_config.turn_mode),
             "door_mode = " + std::to_string(g_vr_config.door_mode),
             std::string("sword_hitbox = ") + (g_vr_config.sword_hitbox ? "true" : "false"),
+            std::string("sword_swing_hits = ") + (g_vr_config.sword_swing_hits ? "true" : "false"),
             "snap_turn_angle = " + std::to_string((int)g_vr_config.snap_turn_angle),
             "smooth_turn_speed = " + std::to_string((int)g_vr_config.smooth_turn_speed),
             "camera_height_offset = " + height.str(), "camera_distance_offset = " + distance.str(),
@@ -132,6 +133,7 @@ std::vector<std::string> vr_lines() {
             std::string("wrist_hud_glance = ") + (g_vr_hud_config.wrist_hud_glance ? "true" : "false"),
             std::string("wrist_hud_swap_hands = ") + (g_vr_hud_config.wrist_hud_swap_hands ? "true" : "false"),
             std::string("aim_reticle_3d = ") + (g_vr_hud_config.aim_reticle_3d ? "true" : "false"),
+            std::string("aim_with_controller = ") + (g_vr_hud_config.aim_with_controller ? "true" : "false"),
             "wrist_hud_size = " + wrist_size.str(), "wrist_hud_side = " + wrist_side.str(),
             "wrist_hud_up = " + wrist_up.str(), "wrist_hud_forward = " + wrist_forward.str(),
             "wrist_hud_tilt = " + wrist_tilt.str(), "wrist_hud_background = " + wrist_background.str(),
@@ -172,6 +174,7 @@ extern "C" void LoadVRConfig(const char *filepath) {
         else if (key == "turn_mode") parse_int(value, g_vr_config.turn_mode);
         else if (key == "door_mode") parse_int(value, g_vr_config.door_mode);
         else if (key == "sword_hitbox") parse_bool(value, g_vr_config.sword_hitbox);
+        else if (key == "sword_swing_hits") parse_bool(value, g_vr_config.sword_swing_hits);
         else if (key == "snap_turn_angle") parse_float(value, g_vr_config.snap_turn_angle);
         else if (key == "smooth_turn_speed") parse_float(value, g_vr_config.smooth_turn_speed);
         else if (key == "camera_height_offset") parse_float(value, g_vr_config.camera_height_offset);
@@ -186,6 +189,7 @@ extern "C" void LoadVRConfig(const char *filepath) {
         else if (key == "wrist_hud_glance") parse_bool(value, g_vr_hud_config.wrist_hud_glance);
         else if (key == "wrist_hud_swap_hands") parse_bool(value, g_vr_hud_config.wrist_hud_swap_hands);
         else if (key == "aim_reticle_3d") parse_bool(value, g_vr_hud_config.aim_reticle_3d);
+        else if (key == "aim_with_controller") parse_bool(value, g_vr_hud_config.aim_with_controller);
         else if (key == "wrist_hud_size") parse_float(value, g_vr_hud_config.wrist_hud_size);
         else if (key == "wrist_hud_side") parse_float(value, g_vr_hud_config.wrist_hud_side);
         else if (key == "wrist_hud_up") parse_float(value, g_vr_hud_config.wrist_hud_up);

@@ -386,6 +386,13 @@ void vr_input_sync(XrSpace space, XrTime time, const float reference[7]) {
         s.stick[1][0] = rs.x; s.stick[1][1] = rs.y;
         for (int h = 0; h < 2; h++) locate_hand(aim_space[h], space, time, &s.hand[h]);
     }
+    {   // (the right controller's pointing ray for aiming items: runtime/vr/vr_rig.c, runtime/hle/vr_aim.c)
+        extern void vr_rig_set_aim(bool ok, const float pose[7]);
+        const SkyVrHand *r = &s.hand[1];
+        const float pose[7] = {r->orientation[0], r->orientation[1], r->orientation[2], r->orientation[3],
+                               r->position[0], r->position[1], r->position[2]};
+        vr_rig_set_aim(s.active && r->tracked, pose);
+    }
     menu_input(&s);
     {   // The game walks Link relative to its own camera; in the headset the player looks around with the head.
         // During gameplay the left stick is turned by how far the eyes look from the game camera: forward walks

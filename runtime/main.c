@@ -193,6 +193,7 @@ static void boot(const char *root) {
     { extern void vr_world_init(void); vr_world_init(); }  // (VR: the world keeps drawing behind the map)
     { extern void vr_cull_init(void); vr_cull_init(); }  // (VR: objects outside the game camera's view are drawn)
     { extern void vr_sword_init(void); vr_sword_init(); }  // (VR: the sword's hits follow the blade in your hand)
+    { extern void vr_slingshot_init(void); vr_slingshot_init(); }  // (VR: the Slingshot shoots where you point)
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

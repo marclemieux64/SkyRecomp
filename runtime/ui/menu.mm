@@ -859,6 +859,9 @@ static void tab_vr_options(void) {
     changed |= opt_toggle("Aiming Reticle in 3D", &g_vr_hud_config.aim_reticle_3d, true,
                           "The Slingshot's, Bow's, Clawshots' and Gust Bellows' reticle is drawn where the shot will "
                           "land, at its depth in the world, instead of on the flat HUD panel.");
+    changed |= opt_toggle("Aim Items with the Controller", &g_vr_hud_config.aim_with_controller, true,
+                          "Aimed items (Slingshot, Bow, Clawshots, Gust Bellows, Beetle) go where the right controller "
+                          "points, instead of following the game's own motion pointer.");
 
     opt_section("Wrist HUD");
     changed |= opt_toggle("Enable Wrist HUD", &g_vr_hud_config.wrist_hud, true,
@@ -909,6 +912,10 @@ static void tab_vr_options(void) {
     changed |= opt_toggle("Sword Hits Follow Your Hand", &g_vr_config.sword_hitbox, true,
                           "1st person: while the sword is drawn, what it hits is where the blade in your right hand is, "
                           "not where the game swings it. The game still decides when you swing.");
+    changed |= opt_toggle("Slashes From the Blade's Path", &g_vr_config.sword_swing_hits, true,
+                          "1st person, the sword drawn: the game reads your slashes from how the blade moves through "
+                          "space - an arm swing counts as much as a flick of the wrist - not from the controller's "
+                          "rotation alone.");
     static const char *turn_modes[] = {"Snap", "Smooth", "Off"};
     changed |= opt_choice("Turning", &g_vr_config.turn_mode, turn_modes, 3, 0,
                           "1st person: the right stick turns you. Snap turns in steps (comfortable for most people), "
