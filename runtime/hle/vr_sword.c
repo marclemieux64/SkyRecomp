@@ -24,9 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <SDL3/SDL_timer.h>
+
 #include "../hle.h"
 #include "../vr/vr_rig.h"
 #include "../vr/vr_settings.h"
+
+float vr_rig_units_per_metre(void);
 
 #define PLAYER_UPDATE (MAIN_BASE + 0xab7cf4)
 #define PLAYER_ACTOR_REF (MAIN_BASE + 0x18299d0)
@@ -36,6 +40,7 @@
 #define TIP_AT 80.0f    // ... and its tip
 #define DRAWN_AT 30.0f  // the line's base further than this from Link's eye point: drawn (sheathed: 19-20)
 #define SHEATHED_AT 25.0f
+#define SWING_SPEED 2.0f  // the controller's blade tip faster than this (m/s): its hits are on
 
 extern bool vr_running(void);
 extern uint64_t renderer_present_count(void);
@@ -81,6 +86,33 @@ static void player_update_hook(Cpu *c) {
     if (!have_last) memcpy(last, blade, sizeof last);
     memcpy(line, blade, sizeof blade);
     memcpy(line + 6, last, sizeof last);
+    // The hits themselves when the blade moves, not when the game reads a slash from the Joy-Con's motion: the sword's
+    // three attack colliders (Link +0x12c8, +0x14b8, +0x16a8: 0x1f0 apart) carry an "attacking" bit (bit 0) that the
+    // game sets only for its slash's cutting frames (measured headset-free: set exactly while the slash's tip moved
+    // fast, 25-90 units an update, clear before and after). Set here too whenever the controller's tip moves faster
+    // than SWING_SPEED, so whatever the blade sweeps through is hit whether or not the game recognised a slash.
+    {
+        static uint64_t last_ns;
+        const uint64_t now_ns = SDL_GetTicksNS();
+        const float dt = last_ns && now_ns > last_ns ? (float)(now_ns - last_ns) * 1e-9f : 0.0f;
+        last_ns = now_ns;
+        const float dx = blade[0] - last[0], dy = blade[1] - last[1], dz = blade[2] - last[2];
+        const float speed = dt > 0 && dt < 0.25f ? sqrtf(dx * dx + dy * dy + dz * dz) / dt / vr_rig_units_per_metre() : 0.0f;
+        static const uint32_t at_flags[3] = {0x12c8, 0x14b8, 0x16a8};
+        if (speed > SWING_SPEED && g_vr_config.sword_swing_hits) {
+            for (int k = 0; k < 3; k++) *(volatile uint32_t *)(uintptr_t)(pl + at_flags[k]) |= 1u;
+        }
+        static int log = -1;
+        static uint64_t logged, swings, frames;
+        if (log < 0) log = getenv("SKYRECOMP_SWORD_LOG") != NULL;
+        frames++, swings += speed > SWING_SPEED;
+        if (log && renderer_present_count() >= logged + 120) {
+            logged = renderer_present_count();
+            LOG("[sword] blade tip %.2f m/s now; hits on from the blade in %llu of %llu updates\n", speed,
+                (unsigned long long)swings, (unsigned long long)frames);
+            swings = frames = 0;
+        }
+    }
     memcpy(last, blade, sizeof last);
     have_last = true;
     static int log = -1;

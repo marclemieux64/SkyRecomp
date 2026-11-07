@@ -120,6 +120,7 @@ std::vector<std::string> vr_lines() {
             "turn_mode = " + std::to_string(g_vr_config.turn_mode),
             "door_mode = " + std::to_string(g_vr_config.door_mode),
             std::string("sword_hitbox = ") + (g_vr_config.sword_hitbox ? "true" : "false"),
+            std::string("sword_swing_hits = ") + (g_vr_config.sword_swing_hits ? "true" : "false"),
             "snap_turn_angle = " + std::to_string((int)g_vr_config.snap_turn_angle),
             "smooth_turn_speed = " + std::to_string((int)g_vr_config.smooth_turn_speed),
             "camera_height_offset = " + height.str(), "camera_distance_offset = " + distance.str(),
@@ -173,6 +174,7 @@ extern "C" void LoadVRConfig(const char *filepath) {
         else if (key == "turn_mode") parse_int(value, g_vr_config.turn_mode);
         else if (key == "door_mode") parse_int(value, g_vr_config.door_mode);
         else if (key == "sword_hitbox") parse_bool(value, g_vr_config.sword_hitbox);
+        else if (key == "sword_swing_hits") parse_bool(value, g_vr_config.sword_swing_hits);
         else if (key == "snap_turn_angle") parse_float(value, g_vr_config.snap_turn_angle);
         else if (key == "smooth_turn_speed") parse_float(value, g_vr_config.smooth_turn_speed);
         else if (key == "camera_height_offset") parse_float(value, g_vr_config.camera_height_offset);
