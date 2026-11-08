@@ -335,6 +335,7 @@ jobs:
             mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-binutils
             mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc
             mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-openxr-sdk
 
       - name: Cache LGPL FFmpeg
         uses: actions/cache@v4

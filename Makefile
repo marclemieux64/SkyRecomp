@@ -286,14 +286,15 @@ dist:
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
 	    "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
-	cp fonts/Baloo2-SemiBold.ttf fonts/Baloo2-OFL.txt fonts/KenneyInput-*.ttf fonts/KenneyInput-*.txt "$(DIST)/"
+	cp fonts/Baloo2-SemiBold.ttf fonts/Baloo2-OFL.txt $(wildcard fonts/KenneyInput-*.ttf fonts/KenneyInput-*.txt) "$(DIST)/"  # (Kenney's: when present - not in the repo)
 	cp README.md LICENSE LICENSE-LASRecomp "$(DIST)/"
 	cp third_party/imgui/LICENSE.txt "$(DIST)/LICENSE-ImGui.txt"
 	cp third_party/smaa/LICENSE.txt "$(DIST)/LICENSE-SMAA.txt"
 	cp third_party/xxhash/LICENSE "$(DIST)/LICENSE-xxHash"
 	@$(if $(LEAN),:,cp -R build/helper/rando-gen "$(DIST)/")
 	tools/win_dlls.sh $(WIN_B)/skyrecomp.exe build/deps-win/bin "$${MINGW_PREFIX:-/ucrt64}/bin" | xargs -I{} cp -u {} "$(DIST)/"
-	$(if $(OPENXR_LOADER),cp "$(OPENXR_LOADER)" "$(DIST)/",:)
+	$(if $(OPENXR_LOADER),cp "$(OPENXR_LOADER)" LICENSE-OpenXR.txt "$(DIST)/",:)
+	$(if $(OPENXR_LOADER),tools/win_dlls.sh "$(OPENXR_LOADER)" build/deps-win/bin "$${MINGW_PREFIX:-/ucrt64}/bin" | xargs -I{} cp -u {} "$(DIST)/",:)  # (MSYS2's loader: libstdc++ and its runtime)
 	ls "$(DIST)"/SDL3.dll "$(DIST)"/avcodec-*.dll "$(DIST)"/libshaderc_shared.dll >/dev/null  # (the DLLs it can't start without)
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	@$(if $(LEAN),:,$(PACK_PY) tools/fetch_reshade.py --output "$(DIST)/reshade")

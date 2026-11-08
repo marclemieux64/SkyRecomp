@@ -50,9 +50,11 @@ checks; automatic SteamVR process detection and launching currently apply to Win
 This build covers VR rendering (stereo output, the head-tracked camera in 1st / 3rd person, culling, per-eye visual
 fixes, performance), the HUD panel / world behind menus / wrist HUD, and the VR controllers as the game's Joy-Con
 pair: buttons, sticks and motion (runtime/vr/vr_input.c bindings for Index, Touch, Vive, WMR and the simple
-controller; runtime/hle/motion.c the motion sensors). Not here: Link's hands on the controllers, the Bow, item
-aiming, the menu pointer, teleport and rumble. With VR on the game always uses the Joy-Con pair (motion controls); a
-gamepad's buttons still work alongside.
+controller; runtime/hle/motion.c the motion sensors). In 1st person: Link's hands, sword, shield and Slingshot on the
+controllers, the sword's hits from the blade in your hand, aimed items and the Slingshot pointed with the right
+controller (with a 3D marker where the seed lands), and Link's own body hidden. Not here yet: the Bow in the hands,
+the menu pointer, teleport and rumble. With VR on the game always uses the Joy-Con pair (motion controls); a gamepad's
+buttons still work alongside.
 
 **VR Resolution** in VR Options controls the game's render resolution relative to OpenXR's recommended per-eye size.
 `1.0x` renders at the recommendation; values above it supersample for a sharper image at a substantial GPU cost.
@@ -77,8 +79,8 @@ OpenXR is detected at compile time (`runtime/vr/vr.c`; define `SKYRECOMP_NO_OPEN
 pacman -S mingw-w64-ucrt-x86_64-openxr-sdk
 ```
 
-A release ships `libopenxr_loader.dll` (MSYS2) or `openxr_loader.dll` (Khronos SDK) next to `skyrecomp.exe`; it is
-loaded only when VR is on.
+A release ships `libopenxr_loader.dll` (MSYS2) or `openxr_loader.dll` (Khronos SDK) next to `skyrecomp.exe`, with its
+Apache 2.0 license as `LICENSE-OpenXR.txt`; it is loaded only when VR is on.
 
 ## Where the code is
 
@@ -143,8 +145,10 @@ geometry is not culled that way (a head turned 160 degrees still sees it). The c
 culling camera through main+0x2bf9958: a box around the frustum and six planes, rebuilt by the camera's update. After
 each update, the box is opened and four side planes are rebuilt from eye 0's view and both eyes' field
 (`vr_rig_cull_view`), 10 degrees wider per edge, meeting 0.3 m behind the eye. The plane along the camera's forward
-axis stays: it carries each object's draw distance (actor +0x23c), so draw distances are the game's. Skyloft: about
-10-20% more draws. `SKYRECOMP_VR_WIDE_CULL=0` keeps the game's culling; `=2` opens it fully, also without VR (test:
+axis carries each object's draw distance (actor +0x23c); it is rebuilt along eye 0's forward axis from the eye's
+position, keeping the game's own offset, so distances are measured the way you look rather than the way the game
+camera faces (only when the game rebuilt it: the three camera updates never compound it;
+`SKYRECOMP_VR_CULL_GAME_DISTANCE=1` keeps the game camera's). Skyloft: about 10-20% more draws. `SKYRECOMP_VR_WIDE_CULL=0` keeps the game's culling; `=2` opens it fully, also without VR (test:
 desktop draws double).
 
 **Draw distance** (Display > Rendering, also without VR; `draw_distance` in the ini, 1 to 4) multiplies every
@@ -167,8 +171,13 @@ more) with a bone within 110 units of his eye confirms that mesh as Link; its sa
 hidden through animations that move the bones away. Small palettes are held items and rigid draws can be equipment
 or effects, so neither is hidden by proximity. The near plane clips remaining head intersections; his shadow stays.
 His head is always hidden: head-only palettes (16..99 matrices: hair 24, face 44) with a bone within 30 units of
-the eye, and tiny rigid meshes (his eyes, <= 96 vertices) within 12 units, and his belt's rigid pieces (centred
-under him, 15..110 units below the eye). His hands (rigid, to the sides) stay. VR Options >
+the eye or centred within 45 units of his face's position this frame (hair hanging further back), and tiny rigid
+meshes (his eyes, <= 96 vertices) within 12 units, and his belt's rigid pieces (centred under him, 15..110 units below
+the eye). His rigid pieces are also remembered (like his body): one that keeps its offset within 30 units of his
+centre line while he walks 40 units is his, hidden wherever a roll, swing, climb or door puts it, and so is anything
+drawn on the same joint as one of his pieces. Meshes on the sword's or shield's own joint are never his (the sheathed
+blade moves with him too), nor are pieces under 24 indices (glints, effects). `[link-log]` lines in the log record
+what is learnt and what is still shown near him. His hands (rigid, to the sides) stay. VR Options >
 Movement Direction turns the left stick by the head's (or a controller's) yaw from the game camera, during gameplay,
 so forward walks where the player looks (or points). `SKYRECOMP_VR_SHOW_LINK=1` keeps all of Link. Theatre: while the game camera is more than 1500 units from Link's
 eye point (Loftwing flight, where that point stops updating; far cinematic cameras) 1st person shows the 3rd-person
@@ -263,13 +272,21 @@ recording for both eyes can't move it per eye), and behind menus. `SKYRECOMP_VR_
 
 VR Options > Sword Hits Follow Your Hand (`sword_hitbox` in `[VR]`, on by default; 1st person). The game keeps Link's
 sword as a swept line in his actor at +0x66e4: the blade's tip (80 units along the sword model's +X from the hilt), a
-point 12 units along, and both of last frame's, in world space. Its hits come from that line: with the line moved
-2 m up (`SKYRECOMP_SWORD_SHIFT="0 200 0"`, a test) a swing at grass in front of Link cuts nothing. Link's update
-(main+0xab7cf4) writes it every frame and is called through his vtable, so it is wrapped with `hle_override`; after
-it runs, the line is replaced by the blade held by the right controller - along the grip's -z, 12 to 80 units out
+point 12 units along, and both of last frame's, in world space. A slash doesn't hit with that line but with three
+attack colliders Link's update builds from it: capsules at +0x12c8, 0x1f0 apart, their two ends at +0x178 and +0x184
+(radius ~45) - the blade's base to a point ~128 units out along it, last update's end to this one's, and the base to
+last update's end: the arc the blade swept. Their bounds are taken after the update (right after it they read one
+update behind), so ends written then are the ones hit with. Measured headset-free next to a bush: a normal slash cuts
+it; the line moved 2 m up still cuts it; the colliders moved 2 m up (`SKYRECOMP_SWORD_SHIFT="0 200 0"` moves both, a
+test) leave it whole through three slashes.
+
+Link's update (main+0xab7cf4) is called through his vtable, so it is wrapped with `hle_override`; after it runs, the
+line and the three capsules are replaced by the blade held by the right controller - along the grip's -z
 (`vr_rig_controller_pose`: the grip in the game world from the eyes' own anchor, updated by every eye camera drawn
-with the real game camera) - this frame's and the last frame's. The game still decides when Link swings (its motion
-controls); where the blade is when it does is the player's hand.
+with the real game camera), the game's own reach along it - this update's and the last one's. The game still decides
+when Link swings (its motion controls); where the blade is when it does, and what it hits, is the player's hand,
+Z-targeting or not. **Slashes From the Blade's Path** (`sword_swing_hits`) also makes the right Joy-Con's turn the game
+reads the blade's motion in space rather than the wrist's (JoyConTranslator).
 
 Drawn or sheathed comes from the game's own line: its base point sits 19-20 units from Link's eye point
 (main+0x1829a30) while sheathed, 47-125 while drawn and swinging (measured in Faron Woods); above 30 for 3 frames it
