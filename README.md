@@ -1,6 +1,6 @@
-# Sky Recomp - Native PC Recompilation - VR Mod
+# Sky Recomp-VR - Native PC Recompilation - VR Mod
 
-**Sky Recomp** is a native cross-platform port (**Windows**, **Linux**, and **macOS**) based on static AArch64 -> C recompilation of *The Legend of Zelda: Skyward Sword HD*.
+**Sky Recomp-VR** is a native cross-platform port (**Windows**, **Linux**, and **macOS**) based on static AArch64 -> C recompilation of *The Legend of Zelda: Skyward Sword HD*.
 
 **Development status: experimental.** Full-game stability has not been established. Crashes, menu freezes and rendering differences are still being investigated. Use the [diagnostic log](docs/diagnostics.md) to report a problem; see the [review of reported issues](docs/video-review.md) for confirmed changes and remaining checks.
 
@@ -110,7 +110,7 @@ Source folders and local runtime files are described in [Repository layout](docs
 
 ## Acknowledgments & Special Thanks
 
-Sky Recomp was made possible thanks to the groundbreaking work of the **[LAS Recomp](https://github.com/peiikai/LASRecomp)** project by [@peiikai](https://github.com/peiikai) and contributors. Much of the architectural design, ARM64-to-C static recompilation pipeline, Maxwell NVN translation layer, Vulkan/SDL3 compatibility runtime, and launcher UI framework were originally developed by LAS Recomp and readapted for *The Legend of Zelda: Skyward Sword HD*. We extend our deepest gratitude to the LAS Recomp project and its community for proving the power and feasibility of native Nintendo Switch static recompilations.
+Sky Recomp-VR was made possible thanks to the groundbreaking work of the **[LAS Recomp](https://github.com/peiikai/LASRecomp)** project by [@peiikai](https://github.com/peiikai) and contributors. Much of the architectural design, ARM64-to-C static recompilation pipeline, Maxwell NVN translation layer, Vulkan/SDL3 compatibility runtime, and launcher UI framework were originally developed by LAS Recomp and readapted for *The Legend of Zelda: Skyward Sword HD*. We extend our deepest gratitude to the LAS Recomp project and its community for proving the power and feasibility of native Nintendo Switch static recompilations.
 
 ---
 
