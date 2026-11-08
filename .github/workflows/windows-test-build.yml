@@ -3,7 +3,7 @@ name: Windows test build
 # A Windows x64 package of a test/* branch, kept as the run's artifact (Actions > the run > Artifacts) instead of a
 # release. Same contents as the Linux / macOS release packages: the exe and its DLLs, and what the start screen builds
 # the game code with on the player's machine (skygen, zig, gamelib-src, skyrecomp.dll.a). No game files, no game code,
-# no 4K texture pack (`make dist LEAN=1`).
+# no 4K texture pack (`make dist LEAN=1`). The OpenXR SDK package: VR is built in, and its loader ships with its license.
 on:
   push:
     branches:
@@ -39,6 +39,7 @@ jobs:
             mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-binutils
             mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc
             mingw-w64-ucrt-x86_64-vulkan-memory-allocator mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-openxr-sdk
 
       # the LGPL FFmpeg (tools/build_deps_windows.sh) takes a while to build; its output is reusable until the script changes
       - name: Cache LGPL FFmpeg
