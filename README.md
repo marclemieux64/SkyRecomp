@@ -1,4 +1,4 @@
-# Sky Recomp - Native PC Recompilation
+# Sky Recomp - Native PC Recompilation - VR Mod
 
 **Sky Recomp** is a native cross-platform port (**Windows**, **Linux**, and **macOS**) based on static AArch64 -> C recompilation of *The Legend of Zelda: Skyward Sword HD*.
 
