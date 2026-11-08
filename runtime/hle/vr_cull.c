@@ -11,7 +11,9 @@
 // axis, tested against the object's draw distance (actor +0x23c, checked by main+0xb114e0) plus +0x164:
 // n . p + d - (c + dist) > 0 is culled. main+0xf261a8 rebuilds the planes from the camera's field of view (camera
 // +0xd8) during the camera's update (main+0xb653f4, called by these virtual functions); after it:
-//  - VR: the box is opened and the side planes are rebuilt from the eyes (the forward plane stays);
+//  - VR: the box is opened and the side planes are rebuilt from the eyes, and the forward plane too: objects'
+//    draw distances are measured along where you look, from your eye (SKYRECOMP_VR_CULL_GAME_DISTANCE=1: the game
+//    camera's, as before);
 //  - Draw distance k (g_settings.draw_distance): the forward plane is scaled, n / k and d / k + c (1 - 1/k), so the
 //    test becomes (depth - c) / k > dist: every object's draw distance times k.
 // Nothing else changes - the projection the game renders with is the camera's own, and the objects' own fields.
@@ -53,7 +55,33 @@ static void eye_plane(float *out, const float v[12], float nx, float ny, float n
     out[3] = nx * v[3] + ny * v[7] + nz * v[11] - back * nz;
 }
 
-static void headset_frustum(float *f) {
+// The forward plane (+0x1b0: each object's draw distance is tested along it) from the eye instead of the game camera:
+// turned toward something, its distance is measured the way you look, not the way the game camera faces. The game's
+// plane is n . p + d with n the camera's forward axis (either sign) and n . campos + d its offset at the camera; the
+// eye's keeps that offset, along the eye's forward axis from the eye's position. Only a plane the game rebuilt is
+// replaced (`fresh`): never one already replaced.
+static void eye_forward_plane(float *f, const float eye_view[12]) {
+    extern bool game_camera_view(float view[12]);
+    float g[12];
+    if (!game_camera_view(g)) return;
+    float *p = f + 0x1b0 / 4;
+    const float len = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (!(len > 0.5f && len < 2.0f)) return;
+    const float gf[3] = {-g[8], -g[9], -g[10]};  // (the game camera's forward in the world: -z)
+    const float s = p[0] * gf[0] + p[1] * gf[1] + p[2] * gf[2];
+    if (fabsf(s) < 0.9f * len) return;  // (not its forward axis: left alone)
+    float cam[3], eye[3];  // positions: -R^T t
+    for (int k = 0; k < 3; k++) {
+        cam[k] = -(g[0 * 4 + k] * g[3] + g[1 * 4 + k] * g[7] + g[2 * 4 + k] * g[11]);
+        eye[k] = -(eye_view[0 * 4 + k] * eye_view[3] + eye_view[1 * 4 + k] * eye_view[7] + eye_view[2 * 4 + k] * eye_view[11]);
+    }
+    const float offset = p[0] * cam[0] + p[1] * cam[1] + p[2] * cam[2] + p[3];
+    const float sign = s > 0 ? len : -len;
+    for (int k = 0; k < 3; k++) p[k] = sign * -eye_view[8 + k];
+    p[3] = offset - (p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2]);
+}
+
+static void headset_frustum(float *f, bool fresh) {
     float view[12], t[4];  // (t: left, right, down, up)
     const bool have = vr_rig_cull_view(view, t);
     if (!have && mode() != 2) return;  // (no stereo frame yet: the game's own)
@@ -75,23 +103,20 @@ static void headset_frustum(float *f) {
         eye_plane(f + 0x190 / 4, view, 1, 0, r, back);
         eye_plane(f + 0x1a0 / 4, view, 0, -1, -d, back);
         eye_plane(f + 0x1c0 / 4, view, 0, 1, u, back);
+        if (fresh && getenv("SKYRECOMP_VR_CULL_GAME_DISTANCE") == NULL) eye_forward_plane(f, view);
     }
     static int logged;
     if (!logged++)
-        LOG("[vr-cull] objects are culled with the headset's view, not the game camera's%s\n",
+        LOG("[vr-cull] objects are culled with the headset's view and its distance, not the game camera's%s\n",
             eyes ? "" : " (test: no culling)");
 }
 
-// The forward plane scaled for draw distance k. Only a plane the game rebuilt since the last call is scaled (never
-// twice), whichever camera update ran.
+// The forward plane scaled for draw distance k (a plane the game rebuilt since the last call: `fresh`).
 static void scale_draw_distance(float *f, float k) {
-    static float last[4];
     float *p = f + 0x1b0 / 4;
-    if (!memcmp(p, last, sizeof last)) return;
     const float c = f[0x164 / 4];
     p[0] /= k, p[1] /= k, p[2] /= k;
     p[3] = p[3] / k + c * (1.0f - 1.0f / k);
-    memcpy(last, p, sizeof last);
     static float logged;
     if (logged != k) LOG("[cull] draw distance x%.2f\n", k), logged = k;
 }
@@ -103,10 +128,15 @@ static void update(Cpu *c, int i) {
     const uint64_t cam = *(const uint64_t *)(uintptr_t)CULL_CAMERA_PTR;
     if (cam < 0x7000000000ull || cam >= 0x7800000000ull) return;
     float *f = (float *)(uintptr_t)cam;
+    // (the forward plane as we left it last: unchanged, the game didn't rebuild it - replacing or scaling it again
+    // would compound, whichever of the three camera updates ran)
+    static float last[4];
+    const bool fresh = memcmp(f + 0x1b0 / 4, last, sizeof last) != 0;
     const int m = mode();
-    if (m == 2 || (m && vr_running())) headset_frustum(f);
+    if (m == 2 || (m && vr_running())) headset_frustum(f, fresh);
     const float k = g_settings.draw_distance;
-    if (k > 1.001f && k <= 4.0f) scale_draw_distance(f, k);
+    if (fresh && k > 1.001f && k <= 4.0f) scale_draw_distance(f, k);
+    memcpy(last, f + 0x1b0 / 4, sizeof last);
 }
 static void update0(Cpu *c) { update(c, 0); }
 static void update1(Cpu *c) { update(c, 1); }
