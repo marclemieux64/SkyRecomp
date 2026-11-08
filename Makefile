@@ -293,7 +293,7 @@ dist:
 	cp third_party/xxhash/LICENSE "$(DIST)/LICENSE-xxHash"
 	@$(if $(LEAN),:,cp -R build/helper/rando-gen "$(DIST)/")
 	tools/win_dlls.sh $(WIN_B)/skyrecomp.exe build/deps-win/bin "$${MINGW_PREFIX:-/ucrt64}/bin" | xargs -I{} cp -u {} "$(DIST)/"
-	$(if $(OPENXR_LOADER),cp "$(OPENXR_LOADER)" "$(DIST)/",:)
+	$(if $(OPENXR_LOADER),cp "$(OPENXR_LOADER)" LICENSE-OpenXR.txt "$(DIST)/",:)
 	ls "$(DIST)"/SDL3.dll "$(DIST)"/avcodec-*.dll "$(DIST)"/libshaderc_shared.dll >/dev/null  # (the DLLs it can't start without)
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	@$(if $(LEAN),:,$(PACK_PY) tools/fetch_reshade.py --output "$(DIST)/reshade")

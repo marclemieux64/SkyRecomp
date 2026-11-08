@@ -29,6 +29,7 @@ Source folders and local runtime files are described in [Repository layout](docs
 - **60 FPS Default**: Supports native resolutions and ultrawide displays. Performance depends on the hardware, scene and shader compilation; a constant 60 FPS is not guaranteed.
 - **Experimental 120 FPS Mode**: Choose **Video > Frame rate > 120 FPS** in the in-game settings. The shared game clock adjusts to elapsed time while audio retains its own clock. 60 FPS remains the default; reaching 120 FPS depends on your hardware and settings.
 - **Included 4K Textures and ReShade on Windows**: Extract the visual release and launch the game; no separate ReShade installer is required. **ESC > Video** lets you switch 4K textures and loaded ReShade effects while playing. Starting with ReShade disabled requires reopening the application to enable it. Ultra without motion blur is the default preset. See [visual pack details](docs/texture-packs.md).
+- **Experimental VR (SteamVR / OpenXR, Windows)**: Off by default; turn on **Enable VR Mode** in VR Options. Stereo rendering with a head-tracked 1st- or 3rd-person camera, a floating HUD and wrist HUD, and the VR controllers as the game's Joy-Con pair. In 1st person, Link's hands, sword, shield and Slingshot follow your controllers; the sword hits wherever the blade in your hand goes; aimed items and the Slingshot point where the right controller points, with a 3D marker where the seed will land; Link's own body is hidden; and objects are culled by what the headset sees. See [VR support](docs/vr.md).
 - **In-Game Settings Menu**: Press **`ESC`** at any time while playing to open the overlay menu (adjust graphics, toggle fullscreen/windowed, change aspect ratio, audio volume, or quit).
 - **Cross-Platform Mod Manager**: Dedicated **Mods** tab with one-click folder opening (`ShellExecute` on Windows, `xdg-open` on Linux, `open` on macOS), live rescan, individual mod enable/disable toggles, and LayeredFS priority reordering. Supports loose `romfs/` files and `romfs_metadata.bin`.
 - **Embedded Setup GUI**: No batch scripts or command-line steps required. The standalone launcher GUI allows picking your game files folder on first launch and boots directly to PLAY on subsequent launches.
@@ -118,6 +119,9 @@ Sky Recomp was made possible thanks to the groundbreaking work of the **[LAS Rec
 ### Projects & Foundations
 - **[LAS Recomp](https://github.com/peiikai/LASRecomp)** — Static recompiler architecture, NVN translation layer, Vulkan runtime, and launcher framework (MIT License).
 
+### VR Support
+- **[@marclemieux64](https://github.com/marclemieux64)** and **[@AL56201](https://github.com/AL56201)** — SteamVR / OpenXR support: stereo rendering, head-tracked camera, controllers, hands and held items, sword hits from the blade, controller aiming and the Slingshot, 1st-person body hiding and headset culling (MIT License, as Sky Recomp's original code).
+
 ### Visual Assets
 
 - **[Henriko Magnifico](https://www.henrikomagnifico.com/zelda-skyward-sword-4k)** — Creator of the Skyward Sword 4K texture pack and supplied ReShade presets. All credit for the texture artwork and supplied presets belongs to Henriko Magnifico.
@@ -131,6 +135,7 @@ Sky Recomp was made possible thanks to the groundbreaking work of the **[LAS Rec
 - **[SMAA](https://github.com/iryoku/smaa)** by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, and Diego Gutierrez — Subpixel Morphological Anti-Aliasing (MIT License).
 - **[AMD FidelityFX Super Resolution 1 (FSR 1)](https://github.com/GPUOpen-Effects/FidelityFX-FSR)** — Spatial upscaler and sharpening filter, ported to GLSL (MIT License).
 - **[shaderc](https://github.com/google/shaderc)** by Google — Online GLSL to SPIR-V shader compilation (Apache 2.0).
+- **[OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK-Source)** by The Khronos Group — The OpenXR loader used for VR headsets (Apache 2.0, `LICENSE-OpenXR.txt`).
 - **[Capstone Engine](https://www.capstone-engine.org)** — Disassembly framework for AArch64 binary analysis (BSD 3-clause).
 - **[Unicorn Engine](https://www.unicorn-engine.org)** — CPU emulator framework used to evaluate and resolve indirect jump tables (GPL 2.0 / BSD).
 - **[python-lz4](https://github.com/python-lz4/python-lz4)** — High-speed compression/decompression for Nintendo Switch NSO binaries (BSD 3-clause; LZ4: BSD 2-clause).
@@ -143,7 +148,7 @@ Sky Recomp was made possible thanks to the groundbreaking work of the **[LAS Rec
 
 Sky Recomp is an unofficial, community-driven fan project. It is not affiliated with, endorsed by, or sponsored by Nintendo. *The Legend of Zelda* and *Skyward Sword* are registered trademarks of Nintendo. **Game executables and original game data are not bundled.** Users must supply their own game files. Open-source dependencies, the launcher font and optional visual packs retain their authors' credits and applicable terms.
 
-Sky Recomp's original code is licensed under the **[MIT License](LICENSE)**. Portions derived from [LAS Recomp](https://github.com/peiikai/LASRecomp) remain under the LAS Recomp copyright and license in **[LICENSE-LASRecomp](LICENSE-LASRecomp)**. Bundled and linked third-party components maintain their respective original licenses.
+Sky Recomp's original code, the VR support included, is licensed under the **[MIT License](LICENSE)**. Portions derived from [LAS Recomp](https://github.com/peiikai/LASRecomp) remain under the LAS Recomp copyright and license in **[LICENSE-LASRecomp](LICENSE-LASRecomp)**. Bundled and linked third-party components maintain their respective original licenses.
 
 ---
 
@@ -156,6 +161,7 @@ Release builds distribute pre-compiled binaries and dynamic libraries of open-so
 | **FFmpeg** (LGPL build, video decoding) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
 | **SDL 3** | 3.4.18 | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18 |
 | **shaderc** (GLSL to SPIR-V compiler) | 2026.4 | Apache 2.0 | https://github.com/google/shaderc |
+| **OpenXR Loader** (VR, Windows) | 1.1.65 | Apache 2.0 | https://github.com/KhronosGroup/OpenXR-SDK-Source |
 | **libiconv** (character encoding conversion) | 1.19 | LGPL 2.1+ | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |
 | **GCC Runtime** (`libgcc`, `libstdc++`) | 16.2.0 | GPL 3.0 w/ Runtime Exception | https://gcc.gnu.org/ |
 | **winpthreads** (mingw-w64 threading) | 14.0.0 | MIT / BSD | https://www.mingw-w64.org/ |

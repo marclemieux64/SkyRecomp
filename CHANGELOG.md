@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] - VR
+
+Experimental SteamVR / OpenXR support (off by default; VR Options > Enable VR Mode), from @marclemieux64 and @AL56201. See [docs/vr.md](docs/vr.md).
+
+### 1st person
+- **Hands and held items:** Link's hands, sword and shield stay on their controllers through swings, shield raises and bashes; the hands are on the correct sides, and the blade shows in both eyes.
+- **Sword hits from your blade:** a slash hits with the game's three sword attack colliders, now placed along the blade in your right hand, so what gets cut is where you swing (Z-targeting no longer steers it).
+- **Aiming with the controller:** aimed items go where the right controller points.
+- **Slingshot:** a new Slingshot system shoots from the controller along where it points, following the game's own seed flight, with a 3D marker where the seed will land; the Slingshot model is held in the hand.
+- **Link's body hidden:** his small pieces (eyes, belt, pouches) and his hair stay hidden when his body leaves the eye point (rolls, swings, climbing, swimming, doors).
+
+### Rendering
+- **Culling follows the headset:** objects are culled against the eyes' view, and their draw distance is measured along where you look.
+
+### Packaging
+- Windows packages bundle the Khronos OpenXR loader with its Apache 2.0 license (`LICENSE-OpenXR.txt`).
+
 ## [2.1.0] - 2026-10-31
 
 This release brings major stability, performance, graphics, and quality-of-life improvements rolled up from @BlAnK182C-bak (Issue #92).
