@@ -40,6 +40,7 @@ bool game_camera_view(float view[12]);  // runtime/hle/player.c: the game camera
 #define LINK_SKELETON_MIN_PALETTE 100
 #define LINK_HEAD_RADIUS 30.0f
 #define LINK_FACE_MIN_PALETTE 40  // (his face: 44 matrices - where his head is)
+#define LINK_HAIR_RADIUS 45.0f    // (a head-sized palette whose bones centre this close to his face's: his hair)
 // Scripted moves (opening a door): the game animates Link through it while his eye point (and his actor's position)
 // stay put, then jump. 1st person follows his animated head then: once it is this far (horizontally) from the eye
 // point, the eye is the head plus its usual offset from the eye point (measured while they stay together).
@@ -626,6 +627,65 @@ static void remember_link_mesh(uint64_t hash, uint64_t count, uint64_t size) {
     static int next;
     g_link_mesh[next] = (LinkMesh){hash, count, size};
     next = (next + 1) % LINK_MESH_CACHE;
+}
+
+// His small rigid pieces (eyes, belt, pouches) are only told by where they sit - at the eye point, on his centre line.
+// When his body leaves the eye point (a roll, a swing, climbing, swimming, a door) they left that place and showed.
+// So, like his body's meshes, they are remembered: once one has kept its offset from the eye point while he walked
+// (LINK_PIECE_WALK units in the world, offset within LINK_PIECE_KEPT - a world mesh he stands in stays behind), that
+// mesh is his wherever it is drawn. His hands and the sword and shield are never taken (they have their own handling).
+#define LINK_PIECE_CANDIDATES 16
+#define LINK_PIECE_WALK 40.0f
+#define LINK_PIECE_KEPT 12.0f
+#define LINK_PIECE_BODY_RADIUS 30.0f
+typedef struct { uint64_t hash, count, size; float eye[3], off[3]; } LinkPiece;
+static LinkPiece g_piece[LINK_PIECE_CANDIDATES];
+
+// Meshes drawn on the sword's or shield's own joint (the blade, the hilt's parts): theirs, never Link's. (The blade
+// sheathed on his back moves with him like his pieces do; taken for one, it vanished from his hand too.)
+#define NOT_LINK_MAX 16
+static LinkMesh g_not_link[NOT_LINK_MAX];
+static bool not_link_mesh(uint64_t hash, uint64_t count, uint64_t size) {
+    for (int i = 0; i < NOT_LINK_MAX; i++)
+        if (g_not_link[i].hash == hash && g_not_link[i].count == count && g_not_link[i].size == size) return true;
+    return false;
+}
+static void mark_not_link(uint64_t hash, uint64_t count, uint64_t size) {
+    if (!hash || not_link_mesh(hash, count, size)) return;
+    static int next;
+    g_not_link[next] = (LinkMesh){hash, count, size};
+    next = (next + 1) % NOT_LINK_MAX;
+    for (int i = 0; i < LINK_MESH_CACHE; i++)  // (forgotten as his, if it had been taken)
+        if (g_link_mesh[i].hash == hash && g_link_mesh[i].count == count && g_link_mesh[i].size == size)
+            g_link_mesh[i] = (LinkMesh){0, 0, 0};
+    fprintf(stderr, "[link-log] on the sword's or shield's joint, never Link: %llu indices, vb %llu bytes\n",
+            (unsigned long long)count, (unsigned long long)size);
+}
+
+static bool link_piece_excluded(uint64_t count, uint64_t vb_size) {
+    return count == 1056 || count == 2352 || vb_size == 28672;  // (the sword, the shield; his hands: HAND_MESH_VB)
+}
+#define LINK_PIECE_MIN_COUNT 24  // (smaller: quads, glints, effects - shared by much of the world; not learnt)
+
+static void link_piece_seen(uint64_t hash, uint64_t count, uint64_t size, const float off[3]) {
+    if (!hash || count < LINK_PIECE_MIN_COUNT || known_link_mesh(hash, count, size) || not_link_mesh(hash, count, size)) return;
+    for (int i = 0; i < LINK_PIECE_CANDIDATES; i++) {
+        LinkPiece *p = &g_piece[i];
+        if (p->hash != hash || p->count != count || p->size != size) continue;
+        const float wx = g_rig.link[0] - p->eye[0], wz = g_rig.link[2] - p->eye[2];
+        const float ox = off[0] - p->off[0], oy = off[1] - p->off[1], oz = off[2] - p->off[2];
+        if (ox * ox + oy * oy + oz * oz > LINK_PIECE_KEPT * LINK_PIECE_KEPT) {  // (left behind: start over from here)
+            memcpy(p->eye, g_rig.link, sizeof p->eye), memcpy(p->off, off, sizeof p->off);
+        } else if (wx * wx + wz * wz > LINK_PIECE_WALK * LINK_PIECE_WALK) {
+            remember_link_mesh(hash, count, size), p->hash = 0;
+            fprintf(stderr, "[link-log] a piece of Link remembered: %llu indices, vb %llu bytes\n",
+                    (unsigned long long)count, (unsigned long long)size);
+        }
+        return;
+    }
+    static int next;
+    g_piece[next] = (LinkPiece){hash, count, size, {g_rig.link[0], g_rig.link[1], g_rig.link[2]}, {off[0], off[1], off[2]}};
+    next = (next + 1) % LINK_PIECE_CANDIDATES;
 }
 
 // ---- 1st person: Link's hands on the controllers. His hands are their own rigid meshes (one per hand and pose,
@@ -1351,23 +1411,99 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
     static int show = -1;
     if (show < 0) show = getenv("SKYRECOMP_VR_SHOW_LINK") != NULL;
     if (show || g_rig.mode != 1 || !g_rig.have_game_view || !slot0) return false;
-    if (!sky_vr_is_scene_projection(slot0, size0)) return false;  // (the shadow pass keeps Link: his shadow stays)
     // Link's eye in game-camera space; his bones sit around it (head to feet), any other character's farther away.
     const float *v = g_rig.game_view;
     float e[3];
     for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+    if (!sky_vr_is_scene_projection(slot0, size0)) {  // (the shadow pass keeps Link: his shadow stays)
+        if (bones && bone_bytes >= 48) {  // (log: skinned draws at him in another pass - once each)
+            float nearest = 1e30f;
+            for (int i = 0; i < (int)(bone_bytes / 48); i++) {
+                const float *b = bones + i * 12;
+                const float dx = b[3] - e[0], dy = b[7] - e[1], dz = b[11] - e[2];
+                nearest = fminf(nearest, dx * dx + dy * dy + dz * dz);
+            }
+            static uint64_t said[32];
+            static int ns;
+            const uint64_t h = mesh_hash(vb, vb_size) ^ count ^ (size0 << 40);
+            bool seen = false;
+            for (int i = 0; i < ns; i++) seen |= said[i] == h;
+            if (nearest < 60.0f * 60.0f && !seen && ns < 32) {
+                said[ns++] = h;
+                fprintf(stderr, "[link-log] skinned %llu indices, %d bones, %.0f from his eye, in another pass (camera block "
+                        "%llu bytes): shown\n", (unsigned long long)count, (int)(bone_bytes / 48), sqrtf(nearest),
+                        (unsigned long long)size0);
+            }
+        }
+        return false;
+    }
     // Rigid draws: only the tiny ones at the eye point are Link's (his eyes, measured in his room: four of 42 vertices
     // there); equipment and effects elsewhere can't be told from Link by proximity and stay.
     if (!bones || bone_bytes < 48) {
+        if (link_piece_excluded(count, vb_size)) return false;
+        const uint64_t hash = mesh_hash(vb, vb_size);
+        {   // (on the sword's or shield's own joint this frame: the item's, never his)
+            extern uint64_t renderer_present_count(void);
+            const uint64_t now = renderer_present_count() + 1;
+            const float *m = slot0 + 16;
+            for (int k = 0; k < HELD_KINDS; k++) {
+                if (g_held[k].frame != now) continue;
+                bool same = true;
+                for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - g_held[k].block[j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+                if (same) { mark_not_link(hash, count, vb_size); return false; }
+            }
+            if (not_link_mesh(hash, count, vb_size)) return false;
+        }
+        {   // (on the same joint as a piece of his drawn this frame or the last: his too, however small - the bits next
+            // to his head drawn with the pieces there)
+            static float blocks[8][12];
+            static uint64_t block_frame[8];
+            static int nb;
+            extern uint64_t renderer_present_count(void);
+            const uint64_t now = renderer_present_count() + 1;
+            const float *m = slot0 + 16;
+            if (known_link_mesh(hash, count, vb_size)) {
+                memcpy(blocks[nb], m, sizeof blocks[nb]), block_frame[nb] = now, nb = (nb + 1) % 8;
+                return true;  // (a piece of his, wherever his body has it now)
+            }
+            for (int b = 0; b < 8; b++) {
+                if (!block_frame[b] || block_frame[b] + 1 < now) continue;
+                bool same = true;
+                for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - blocks[b][j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+                if (same) {
+                    if (hash) remember_link_mesh(hash, count, vb_size);
+                    fprintf(stderr, "[link-log] on a joint of his, his: %llu indices, vb %llu bytes\n",
+                            (unsigned long long)count, (unsigned long long)vb_size);
+                    return true;
+                }
+            }
+        }
         const float dx = slot0[19] - e[0], dy = slot0[23] - e[1], dz = slot0[27] - e[2];
-        if (count <= LINK_EYE_PART_MAX_VERTS && dx * dx + dy * dy + dz * dz < LINK_EYE_PART_RADIUS * LINK_EYE_PART_RADIUS)
-            return true;
-        // His belt's rigid pieces (measured: 12 and 216 vertices, 27 and 48 units below the eye point): on his
-        // centre line, between chest and knees - part of his body. (His hands hang ~25 units to the sides.)
         float w[3];  // the offset in the world (view = R | t: R^T d)
         for (int i = 0; i < 3; i++) w[i] = v[0 * 4 + i] * dx + v[1 * 4 + i] * dy + v[2 * 4 + i] * dz;
+        // His eyes (tiny, at the eye point) and his belt's rigid pieces (measured: 12 and 216 vertices, 27 and 48 units
+        // below the eye point): on his centre line, between chest and knees - part of his body. (His hands hang ~25
+        // units to the sides.)
+        const bool eyes = count <= LINK_EYE_PART_MAX_VERTS && dx * dx + dy * dy + dz * dz < LINK_EYE_PART_RADIUS * LINK_EYE_PART_RADIUS;
         const bool belt = w[0] * w[0] + w[2] * w[2] < LINK_BELT_RADIUS * LINK_BELT_RADIUS && w[1] < -15.0f && w[1] > -110.0f;
-        return belt;
+        // (learnt from a wider place - his hips, back, pouches - but hidden there only once it moved with him)
+        const float r2 = w[0] * w[0] + w[2] * w[2];
+        const bool body = r2 < LINK_PIECE_BODY_RADIUS * LINK_PIECE_BODY_RADIUS && w[1] < -5.0f && w[1] > -140.0f;
+        if (eyes || belt || body) link_piece_seen(hash, count, vb_size, w);
+        if (!eyes && !belt && !body &&dx * dx + dy * dy + dz * dz < 70.0f * 70.0f) {  // (log: rigid meshes at him left shown - once each)
+            static uint64_t said[64];
+            static int ns;
+            const uint64_t h = hash ^ count;
+            bool known = false;
+            for (int i = 0; i < ns; i++) known |= said[i] == h;
+            if (!known && ns < 64) {
+                said[ns++] = h;
+                fprintf(stderr, "[link-log] rigid %llu indices, vb %llu bytes, at %+.0f %+.0f %+.0f from his eye "
+                        "(%.0f off his centre line): shown\n", (unsigned long long)count, (unsigned long long)vb_size,
+                        w[0], w[1], w[2], sqrtf(w[0] * w[0] + w[2] * w[2]));
+            }
+        }
+        return eyes || belt;
     }
     const int n = (int)(bone_bytes / 48);
     float nearest = 1e30f;
@@ -1379,11 +1515,52 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
     // Head-only palettes (his face: 44 matrices, his hair: 24), all at the eye point: hidden in both settings, they
     // would fill the view. (Held items have small palettes too, but at his hands, not his eye.)
     if (n < LINK_SKELETON_MIN_PALETTE) {
-        if (n < LINK_HEAD_MIN_PALETTE) return false;
+        if (n < LINK_HEAD_MIN_PALETTE) {
+            if (nearest < 70.0f * 70.0f) {  // (log: small skinned meshes drawn at him, left shown - once each)
+                static uint64_t said[32];
+                static int ns;
+                const uint64_t h = mesh_hash(vb, vb_size) ^ count;
+                bool known = false;
+                for (int i = 0; i < ns; i++) known |= said[i] == h;
+                if (!known && ns < 32) {
+                    said[ns++] = h;
+                    fprintf(stderr, "[link-log] skinned %llu indices, %d bones, vb %llu bytes, %.0f from his eye: shown\n",
+                            (unsigned long long)count, n, (unsigned long long)vb_size, sqrtf(nearest));
+                }
+            }
+            return false;
+        }
         // (remembered: in scripted moves - a door - his animated head leaves the eye point, which stays put)
-        const bool near = nearest < LINK_HEAD_RADIUS * LINK_HEAD_RADIUS;
+        bool near = nearest < LINK_HEAD_RADIUS * LINK_HEAD_RADIUS;
+        float head_d = -1;
+        {   // (or around his head as his face has it this frame: hair hanging further from the eye point - the back of
+            // his head, a swing or a roll moving his head - was left shown)
+            extern uint64_t renderer_present_count(void);
+            const uint64_t now = renderer_present_count() + 1;
+            if (g_head_frame && g_head_frame + 1 >= now) {
+                float c[3] = {0, 0, 0}, w[3];
+                for (int i = 0; i < n; i++) c[0] += bones[i * 12 + 3], c[1] += bones[i * 12 + 7], c[2] += bones[i * 12 + 11];
+                for (int r = 0; r < 3; r++) c[r] = c[r] / n - v[r * 4 + 3];
+                for (int i = 0; i < 3; i++) w[i] = v[0 * 4 + i] * c[0] + v[1 * 4 + i] * c[1] + v[2 * 4 + i] * c[2];
+                const float hx = w[0] - g_head_world[0], hy = w[1] - g_head_world[1], hz = w[2] - g_head_world[2];
+                head_d = sqrtf(hx * hx + hy * hy + hz * hz);
+                near |= head_d < LINK_HAIR_RADIUS;
+            }
+        }
         const uint64_t hash = mesh_hash(vb, vb_size);
         const bool known = known_link_mesh(hash, count, vb_size);
+        if (!near && !known && nearest < 90.0f * 90.0f) {  // (log: head-sized meshes at him left shown - once each)
+            static uint64_t said[32];
+            static int ns;
+            const uint64_t h = hash ^ count;
+            bool seen = false;
+            for (int i = 0; i < ns; i++) seen |= said[i] == h;
+            if (!seen && ns < 32) {
+                said[ns++] = h;
+                fprintf(stderr, "[link-log] head-sized %llu indices, %d bones, vb %llu bytes, %.0f from his eye, %.0f from his "
+                        "head: shown\n", (unsigned long long)count, n, (unsigned long long)vb_size, sqrtf(nearest), head_d);
+            }
+        }
         if (near && !known) remember_link_mesh(hash, count, vb_size);
         if (!near && !known) return false;
         if (n >= LINK_FACE_MIN_PALETTE) {  // where his head is (his face's bones, in the world: R^T (c - t))
