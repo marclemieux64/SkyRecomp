@@ -293,6 +293,31 @@ void vr_rig_begin_frame(void) {
         else if (camera_distance < THEATRE_LEAVE) theatre = false;
     }
     if (!have_eye) theatre = false;
+    // The Beetle in flight: the game's own camera follows it (its standard view), as theatre; 1st person again once
+    // it is caught (runtime/hle/player.c). SKYRECOMP_VR_BEETLE_FP=1 stays in 1st person.
+    {
+        extern bool player_beetle_flying(void);
+        static int keep = -1;
+        if (keep < 0) keep = getenv("SKYRECOMP_VR_BEETLE_FP") != NULL;
+        // (held through a few frames that read it as caught: one bad read of Link's actor didn't bring 1st person back
+        // mid-flight)
+        static int miss;
+        const bool now_flying = have_eye && !keep && player_beetle_flying();
+        static bool flying_kept;
+        if (now_flying) flying_kept = true, miss = 0;
+        else if (flying_kept && ++miss > 4) flying_kept = false;
+        const bool beetle = flying_kept && have_eye && !keep;
+        static bool was;
+        if (beetle != was) fprintf(stderr, "[vr-rig] the Beetle %s: %s\n", beetle ? "launched" : "caught",
+                                   beetle ? "the game's camera follows it" : "1st person again");
+        was = beetle;
+        static bool beetle_theatre;  // (leaving: back to 1st person unless the camera is far for its own reasons)
+        if (beetle) theatre = true, beetle_theatre = true;
+        else if (beetle_theatre) {
+            if (camera_distance < THEATRE_ENTER) theatre = false;
+            beetle_theatre = false;
+        }
+    }
     {   // (spawn settling, above)
         extern uint64_t renderer_present_count(void);
         static bool had_eye;
@@ -443,6 +468,7 @@ static float g_sling_b0[12], g_sling_rel[12];  // (the Slingshot's first bone th
 static uint64_t g_sling_frame;
 static int g_sling_side = -1;
 static bool g_sling_rel_ok;
+static void beetle_measure(void);  // (the Beetle on his wrist: vr_rig_beetle_draw)
 static uint64_t g_hand_count_cur;  // (the hand draw's index count: which pose's mesh)
 static bool hand_block(const VrRigAnchor *a, const float reference[7], const float game[12], float out[12]);
 static void update_controller_poses(const VrRigAnchor *a, const float reference[7]);
@@ -629,6 +655,40 @@ static void remember_link_mesh(uint64_t hash, uint64_t count, uint64_t size) {
     next = (next + 1) % LINK_MESH_CACHE;
 }
 
+// A remembered mesh drawn this far from his eye point is not his: an enemy that once came close enough to be taken for
+// him (every enemy of its kind shares the mesh, so all of them vanished, even looked at). Forgotten; his own is learnt
+// again the next time it is drawn at him. (Mirrored draws - reflections - don't count.)
+#define LINK_FORGET_DISTANCE 500.0f
+// His body's and head's bones centre on him: their centre within this far sideways of his eye point. An enemy close
+// enough to have a bone within LINK_BONE_RADIUS of his eye still centres a body-width or more away.
+#define LINK_BODY_CENTRE 40.0f
+#define LINK_HEAD_CENTRE 45.0f
+
+static void forget_link_mesh(uint64_t hash, uint64_t count, uint64_t size, float distance) {
+    for (int i = 0; i < LINK_MESH_CACHE; i++)
+        if (g_link_mesh[i].hash == hash && g_link_mesh[i].count == count && g_link_mesh[i].size == size) {
+            g_link_mesh[i] = (LinkMesh){0, 0, 0};
+            fprintf(stderr, "[link-log] not his after all (drawn %.0f from his eye): %llu indices, vb %llu bytes\n", distance,
+                    (unsigned long long)count, (unsigned long long)size);
+        }
+}
+
+static bool mirrored_block(const float *slot0) {  // (the draw's view block turns the world inside out: a reflection)
+    const float *m = slot0 + 16;
+    const float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
+    return det < 0;
+}
+
+// The centre of a palette's bones in the world, minus his eye point: its sideways (horizontal) distance from him.
+static float palette_sideways(const float *bones, int n, const float *v) {
+    float c[3] = {0, 0, 0}, w[3];
+    for (int i = 0; i < n; i++) c[0] += bones[i * 12 + 3], c[1] += bones[i * 12 + 7], c[2] += bones[i * 12 + 11];
+    for (int r = 0; r < 3; r++) c[r] = c[r] / n - v[r * 4 + 3];
+    for (int i = 0; i < 3; i++) w[i] = v[0 * 4 + i] * c[0] + v[1 * 4 + i] * c[1] + v[2 * 4 + i] * c[2];
+    const float dx = w[0] - g_rig.link[0], dz = w[2] - g_rig.link[2];
+    return sqrtf(dx * dx + dz * dz);
+}
+
 // His small rigid pieces (eyes, belt, pouches) are only told by where they sit - at the eye point, on his centre line.
 // When his body leaves the eye point (a roll, a swing, climbing, swimming, a door) they left that place and showed.
 // So, like his body's meshes, they are remembered: once one has kept its offset from the eye point while he walked
@@ -663,7 +723,8 @@ static void mark_not_link(uint64_t hash, uint64_t count, uint64_t size) {
 }
 
 static bool link_piece_excluded(uint64_t count, uint64_t vb_size) {
-    return count == 1056 || count == 2352 || vb_size == 28672;  // (the sword, the shield; his hands: HAND_MESH_VB)
+    return count == 1056 || count == 2352 || vb_size == 28672 ||  // (the sword, the shield; his hands: HAND_MESH_VB)
+           (count == 330 && vb_size == 12288);                     // (the Beetle on his wrist: vr_rig_beetle_draw)
 }
 #define LINK_PIECE_MIN_COUNT 24  // (smaller: quads, glints, effects - shared by much of the world; not learnt)
 
@@ -971,6 +1032,7 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     for (int k = 0; k < HELD_KINDS; k++)  // (an item drawn before its hand this frame: measured now, used next frame)
         if (g_held[k].frame == now && g_held[k].side == side) held_measure(k);
     if (g_sling_frame == now && g_sling_side == side) sling_measure();  // (the Slingshot too)
+    if (side == 1) beetle_measure();  // (and the Beetle, if drawn this frame: it checks)
     return side;
 }
 
@@ -1052,6 +1114,225 @@ bool vr_rig_held_skin_draw(const float *slot0, uint64_t size0, const float *bone
     static int said;
     if (!said++) fprintf(stderr, "[vr] first person: the Slingshot is in the %s hand on its controller\n", side ? "right" : "left");
     return true;
+}
+
+// The Beetle on his right wrist (held, before a launch): three draws on one model matrix - the Beetle actor's (its
+// position +0x144) - rigid 330 indices (12288-byte vertex buffer), skinned 1464 (61440, 5 bones) and 96 (4096, 7
+// bones): the Beetle and the launcher it sits on. Measured headset-free with SKYRECOMP_HELD_NEAR=beetle (a test build:
+// every draw at the held Beetle's position). All three go with his right hand onto the right controller, as the
+// Slingshot does: rel = Hg^-1 M (the model relative to the hand the game draws, measured whenever both are drawn in a
+// frame), then target = Vg C K rel and T = target M^-1 - for the rigid one its view block, for the skinned ones their
+// bones too (exec.c). So it sits where the game puts it, on the wrist, behind the hand. SKYRECOMP_VR_BEETLE_SHIFT="x y z"
+// (game units, in the controller's grip frame: x right, y up, -z forward) moves it from there.
+#define BEETLE_ROLL_DEGREES 270.0f  // (counterclockwise about the forearm, looking down it toward the hand; user's pick)
+// (the shift is along the controller's grip axes as the game world has them - tilted with the handle, so +z goes back
+// and down. User 2026-11-09: y -4, z 0 is in line with the hand; z +8 put it lower and still over the hand - back
+// to y -4, z 0.)
+#define BEETLE_BACK 0.0f
+#define BEETLE_UP -7.0f  // (negative is up: user 2026-11-09, -4 in line with the hand, then "a bit up")
+// (game units back along the forearm - against the controller's pointing direction. User 2026-11-09 screenshot at 6:
+// the bracelet still round the middle of the hand, the fingers out past it - about half a hand further back: 12;
+// then "a bit further": 16, 20)
+#define BEETLE_ARM_BACK 20.0f
+// (game units straight up in the world - about 100 a metre. User 2026-11-09: 4 didn't show; 20 back along a slightly
+// raised forearm also drops it a few units)
+#define BEETLE_LIFT 10.0f
+// The launcher bracelet isn't one of the three: (user 2026-11-09, turning each in turn) 1464 is part of the Beetle, the
+// rigid 330 its blade and 96 its wings. So nothing is swung by default (SKYRECOMP_VR_BANGLE_MESH=<index count> and
+// SKYRECOMP_VR_BANGLE_YAW swing one, for tests).
+#define BANGLE_COUNT_DEFAULT 0
+// The bracelet is its own rigid draw: 768 indices in a 28672-byte vertex buffer - the size of his hands' - so the hands
+// code took it for his right hand and put it on the controller as one, its model turned to a hand's: sideways along
+// the arm (found in VR with vr_rig_beetle_near_note: both 750, his hand, and 768 taken as his right hand while the
+// Beetle was out). While the Beetle is on his wrist it is not a hand (vr_rig_hand_side) but goes with the Beetle: the
+// same move as the Beetle's rigid body (its T, camera space), so it keeps the game's place against it.
+#define BRACELET_COUNT 768
+#define BRACELET_VB 28672
+static float g_beetle_T[12];          // (the Beetle's rigid body's move this frame or the last)
+static uint64_t g_beetle_T_frame;
+// The Beetle is placed against the bracelet, not his hand: (user 2026-11-09) its 270-degree turn and its place on the
+// wrist were tuned while the bracelet was taken for his right hand (drawn after his real hand, so the hand the Beetle
+// was measured against) - against his real hand (750) it sat out at the fingers, blade upright. rel = B^-1 M, B the
+// bracelet's game block, M the Beetle's, measured whenever both are drawn in one frame.
+static float g_bracelet_block[12], g_beetle_bracelet_rel[12];
+static uint64_t g_bracelet_frame;
+static bool g_beetle_bracelet_ok;
+static float g_beetle_m_game[12];     // (the Beetle's rigid body's game block, and its frame)
+static uint64_t g_beetle_m_frame;
+static void beetle_bracelet_measure(void) {
+    float bi[12];
+    if (!g_bracelet_frame || g_bracelet_frame != g_beetle_m_frame || !a_inverse(g_bracelet_block, bi)) return;
+    a_mul(bi, g_beetle_m_game, g_beetle_bracelet_rel);
+    g_beetle_bracelet_ok = true;
+}
+static bool beetle_out(void) {        // (the Beetle drawn on his wrist this frame or the last)
+    extern uint64_t renderer_present_count(void);
+    return g_beetle_T_frame && g_beetle_T_frame + 2 >= renderer_present_count() + 1;
+}
+#define BANGLE_YAW_DEGREES 90.0f
+// w (3x4, world) turned by `degrees` about the axis (ax, ay, az) through its own position (counterclockwise looking
+// against the axis)
+static void beetle_turn(float w[12], float ax, float ay, float az, float degrees) {
+    const float len = sqrtf(ax * ax + ay * ay + az * az), th = degrees * (float)(M_PI / 180.0);
+    if (!(len > 0.5f) || th == 0.0f) return;
+    const float x = ax / len, y = ay / len, z = az / len, co = cosf(th), si = sinf(th), t = 1.0f - co;
+    const float R[9] = {t * x * x + co, t * x * y - si * z, t * x * z + si * y,
+                        t * x * y + si * z, t * y * y + co, t * y * z - si * x,
+                        t * x * z - si * y, t * y * z + si * x, t * z * z + co};
+    float r[12];
+    memcpy(r, w, sizeof r);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) w[i * 4 + j] = R[i * 3] * r[j] + R[i * 3 + 1] * r[4 + j] + R[i * 3 + 2] * r[8 + j];
+}
+static bool beetle_mesh(uint64_t count, uint64_t vb_size) {
+    return (count == 330 && vb_size == 12288) || (count == 1464 && vb_size == 61440) || (count == 96 && vb_size == 4096);
+}
+static float g_beetle_m[12], g_beetle_rel[12];
+static uint64_t g_beetle_frame;
+static bool g_beetle_rel_ok;
+static void beetle_measure(void) {  // (the Beetle and his right hand drawn this frame: Hg^-1 M again)
+    float hi[12];
+    if (!g_beetle_frame || g_hand_game_frame[1] != g_beetle_frame || !a_inverse(g_hand_game[1], hi)) return;
+    a_mul(hi, g_beetle_m, g_beetle_rel);
+    g_beetle_rel_ok = true;
+}
+bool vr_rig_beetle_draw(const float *slot0, uint64_t size0, uint64_t count, uint64_t vb_size) {
+    static int off = -1;
+    // (user 2026-11-09: turned 90 degrees counterclockwise - a roll about the forearm, seen looking down it toward the
+    // hand - and a few units back toward the elbow from where the game holds it. SKYRECOMP_VR_BEETLE_ROLL (degrees) and
+    // SKYRECOMP_VR_BEETLE_SHIFT override.)
+    static float shift[3] = {0.0f, BEETLE_UP, BEETLE_BACK}, roll = BEETLE_ROLL_DEGREES, bangle_yaw = BANGLE_YAW_DEGREES;
+    static uint64_t bangle_count = BANGLE_COUNT_DEFAULT;
+    if (off < 0) {
+        off = getenv("SKYRECOMP_VR_NO_HELD") != NULL;
+        const char *e = getenv("SKYRECOMP_VR_BEETLE_SHIFT");
+        if (e) sscanf(e, "%f %f %f", &shift[0], &shift[1], &shift[2]);
+        e = getenv("SKYRECOMP_VR_BEETLE_ROLL");
+        if (e) roll = (float)atof(e);
+        e = getenv("SKYRECOMP_VR_BANGLE_YAW");
+        if (e) bangle_yaw = (float)atof(e);
+        e = getenv("SKYRECOMP_VR_BANGLE_MESH");
+        if (e) bangle_count = (uint64_t)atoll(e);
+    }
+    const float yaw = count == bangle_count ? bangle_yaw : 0.0f;  // (the bracelet: also swung to run along the arm)
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    if (count == BRACELET_COUNT && vb_size == BRACELET_VB) {  // (the bracelet: with the Beetle's own move)
+        if (off || !slot0 || !hands_on() || !beetle_out() || !sky_vr_is_scene_projection(slot0, size0)) return false;
+        memcpy(g_bracelet_block, slot0 + 16, sizeof g_bracelet_block), g_bracelet_frame = now;
+        beetle_bracelet_measure();
+        memcpy(g_skin_T, g_beetle_T, sizeof g_skin_T);
+        g_skin_on = true;
+        static int said;
+        if (!said++) fprintf(stderr, "[vr] first person: the Beetle's bracelet goes with the Beetle\n");
+        return true;
+    }
+    if (off || !beetle_mesh(count, vb_size) || !slot0 || !hands_on() || !g_rig.have_game_view ||
+        !sky_vr_is_scene_projection(slot0, size0))
+        return false;
+    const float *m = slot0 + 16;
+    // (in his right hand: within reach of it; in flight it is far from it and stays the game's)
+    if (!g_hand_game_frame[1] || g_hand_game_frame[1] + 2 < now) return false;
+    const float *h = g_hand_game[1];
+    const float dx = m[3] - h[3], dy = m[7] - h[7], dz = m[11] - h[11];
+    if (dx * dx + dy * dy + dz * dz > SKIN_REACH * SKIN_REACH) return false;
+    extern bool door_at(void);
+    if (g_scripted && door_at()) return false;
+    float C[12], K[12], ck[12], vck[12], target[12], mi[12];
+    if (!vr_rig_controller_pose(1, C) || !a_inverse(m, mi)) return false;
+    memcpy(g_beetle_m, m, sizeof g_beetle_m);
+    g_beetle_frame = now;
+    if (g_hand_game_frame[1] == now) beetle_measure();
+    if (!g_beetle_rel_ok) {  // (not measured yet: from the hand's block as it is)
+        float hi[12];
+        if (!a_inverse(g_hand_game[1], hi)) return false;
+        a_mul(hi, m, g_beetle_rel);
+    }
+    hand_k(1, K);
+    a_mul(C, K, ck);
+    if (count == 330) {  // (its rigid body: against the bracelet when known - above)
+        memcpy(g_beetle_m_game, m, sizeof g_beetle_m_game), g_beetle_m_frame = now;
+        beetle_bracelet_measure();
+    }
+    float w[12], rel_b[12];  // (the Beetle in the world: against the bracelet as a hand on the controller - or the hand)
+    if (g_beetle_bracelet_ok && count == 330) a_mul(ck, g_beetle_bracelet_rel, w);
+    else if (g_beetle_bracelet_ok && g_bracelet_frame + 2 >= now) {
+        // (its skinned parts share the rigid body's move: B^-1 of this draw's block, through the bracelet's place)
+        float bi[12];
+        if (!a_inverse(g_bracelet_block, bi)) return false;
+        a_mul(bi, m, rel_b);
+        a_mul(ck, rel_b, w);
+    } else a_mul(ck, g_beetle_rel, w);
+    // Turned about the forearm (the grip's z: roll), the bracelet then swung about the grip's up axis (y: yaw) - each
+    // through the item's own place - then shifted in the grip's frame.
+    beetle_turn(w, C[2], C[6], C[10], roll);
+    beetle_turn(w, C[1], C[5], C[9], yaw);
+    // Its place: the wrist (the hand mesh's root on the controller, ck's translation), then shifted in the grip's frame
+    // - not where the game's grip puts it: against his real hand (750) that is out at the fingers (user 2026-11-09: once
+    // the bracelet stopped being taken for his hand, the pair left the wrist). SKYRECOMP_VR_BEETLE_AT_GRIP=1: the game's.
+    // (superseded: measured against the bracelet it is on the wrist already. SKYRECOMP_VR_BEETLE_AT_WRIST=1 centres it
+    // at the wrist point anyway.)
+    static int at_wrist = -1;
+    if (at_wrist < 0) at_wrist = getenv("SKYRECOMP_VR_BEETLE_AT_WRIST") != NULL;
+    if (at_wrist) w[3] = ck[3], w[7] = ck[7], w[11] = ck[11];
+    for (int i = 0; i < 3; i++) w[i * 4 + 3] += C[i * 4 + 0] * shift[0] + C[i * 4 + 1] * shift[1] + C[i * 4 + 2] * shift[2];
+    {   // back along the forearm: against where the controller points (its aim ray), level with where it is - the
+        // grip's z runs along the tilted handle and took it down too (user 2026-11-09). SKYRECOMP_VR_BEETLE_ARM_BACK.
+        static float arm_back = -1;
+        if (arm_back < 0) {
+            const char *e = getenv("SKYRECOMP_VR_BEETLE_ARM_BACK");
+            arm_back = e ? (float)atof(e) : BEETLE_ARM_BACK;
+        }
+        float o[3], d[3];
+        if (arm_back != 0 && vr_rig_controller_aim(o, d))
+            for (int i = 0; i < 3; i++) w[i * 4 + 3] -= d[i] * arm_back;
+        // and straight up in the world (the grip's y is tilted with the handle: a few units along it barely lifted
+        // it - user 2026-11-09). SKYRECOMP_VR_BEETLE_LIFT.
+        static float lift = -1e9f;
+        if (lift < -1e8f) {
+            const char *e = getenv("SKYRECOMP_VR_BEETLE_LIFT");
+            lift = e ? (float)atof(e) : BEETLE_LIFT;
+        }
+        w[7] += lift;
+    }
+    a_mul(g_rig.game_view, w, target);
+    (void)vck;
+    a_mul(target, mi, g_skin_T);
+    g_skin_on = true;
+    if (count == 330) memcpy(g_beetle_T, g_skin_T, sizeof g_beetle_T), g_beetle_T_frame = now;  // (its rigid body: the bracelet's move)
+    static int said;
+    if (!said++) fprintf(stderr, "[vr] first person: the Beetle on the right controller, on his wrist\n");
+    return true;
+}
+
+// (RE, exec.c: every draw, eye 0) While the Beetle is on his wrist, each other kind of draw near it - its model or a
+// bone within 45 units - once, to find the launcher bracelet: its index count, vertex buffer, bones, what the hands
+// code made of it, and its axes against the Beetle's ([beetle-near] in the log).
+void vr_rig_beetle_near_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes, uint64_t count,
+                             uint64_t vb_size, int hand, bool held) {
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    if (!slot0 || !g_beetle_frame || g_beetle_frame + 2 < now || beetle_mesh(count, vb_size) ||
+        !sky_vr_is_scene_projection(slot0, size0))
+        return;
+    const float *m = slot0 + 16, *b = g_beetle_m;
+    float d2 = (m[3] - b[3]) * (m[3] - b[3]) + (m[7] - b[7]) * (m[7] - b[7]) + (m[11] - b[11]) * (m[11] - b[11]);
+    const int n = bones && bone_bytes >= 48 ? (int)(bone_bytes / 48) : 0;
+    for (int i = 0; i < n && i < 512; i++) {
+        const float *q = bones + i * 12;
+        d2 = fminf(d2, (q[3] - b[3]) * (q[3] - b[3]) + (q[7] - b[7]) * (q[7] - b[7]) + (q[11] - b[11]) * (q[11] - b[11]));
+    }
+    if (d2 > 45.0f * 45.0f) return;
+    static uint64_t seen[48];
+    static int ns;
+    const uint64_t key = count * 65536 + vb_size / 256 * 8 + (uint64_t)(n > 0);
+    for (int i = 0; i < ns; i++) if (seen[i] == key) return;
+    if (ns >= 48) return;
+    seen[ns++] = key;
+    fprintf(stderr, "[beetle-near] %llu indices, vb %llu bytes, %s%d bones, %.1f from the Beetle; %s; x axis %.2f %.2f %.2f "
+            "(the Beetle's %.2f %.2f %.2f)\n", (unsigned long long)count, (unsigned long long)vb_size, n ? "skinned, " : "rigid, ",
+            n, sqrtf(d2), hand >= 0 ? (hand ? "taken as his right hand" : "taken as his left hand") : held ? "a held item" : "left to the game",
+            m[0], m[4], m[8], b[0], b[4], b[8]);
 }
 
 // (RE, exec.c: each skinned draw, eye 0; SKYRECOMP_VR_HAND_LOG=1) Skinned draws with a small bone palette (held items:
@@ -1298,6 +1579,7 @@ static void hand_k(int side, float k[12]) {
 // (exec.c) Which hand a rigid draw is: 0 left, 1 right, -1 none
 int vr_rig_hand_side(const float *slot0, uint64_t size0, uint64_t count, uint64_t vb, uint64_t vb_size) {
     if (!slot0 || !hands_on() || !sky_vr_is_scene_projection(slot0, size0)) return -1;
+    if (count == BRACELET_COUNT && vb_size == BRACELET_VB && beetle_out()) return -1;  // (the Beetle's bracelet, not a hand)
     const float *v = g_rig.game_view;
     float e[3];
     for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
@@ -1463,6 +1745,12 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
             const uint64_t now = renderer_present_count() + 1;
             const float *m = slot0 + 16;
             if (known_link_mesh(hash, count, vb_size)) {
+                const float px = slot0[19] - e[0], py = slot0[23] - e[1], pz = slot0[27] - e[2];
+                const float d2 = px * px + py * py + pz * pz;
+                if (d2 > LINK_FORGET_DISTANCE * LINK_FORGET_DISTANCE && !mirrored_block(slot0)) {
+                    forget_link_mesh(hash, count, vb_size, sqrtf(d2));  // (drawn far from him: someone else's)
+                    return false;
+                }
                 memcpy(blocks[nb], m, sizeof blocks[nb]), block_frame[nb] = now, nb = (nb + 1) % 8;
                 return true;  // (a piece of his, wherever his body has it now)
             }
@@ -1561,8 +1849,12 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
                         "head: shown\n", (unsigned long long)count, n, (unsigned long long)vb_size, sqrtf(nearest), head_d);
             }
         }
-        if (near && !known) remember_link_mesh(hash, count, vb_size);
-        if (!near && !known) return false;
+        bool known_now = known;
+        if (known && nearest > LINK_FORGET_DISTANCE * LINK_FORGET_DISTANCE && !mirrored_block(slot0))
+            forget_link_mesh(hash, count, vb_size, sqrtf(nearest)), known_now = false;
+        // (learnt only centred on him: an enemy's face or hair close to his isn't)
+        if (near && !known_now && palette_sideways(bones, n, v) < LINK_HEAD_CENTRE) remember_link_mesh(hash, count, vb_size), known_now = true;
+        if (!known_now && !(near && nearest < LINK_HEAD_RADIUS * LINK_HEAD_RADIUS)) return false;
         if (n >= LINK_FACE_MIN_PALETTE) {  // where his head is (his face's bones, in the world: R^T (c - t))
             float c[3] = {0, 0, 0};
             for (int i = 0; i < n; i++) c[0] += bones[i * 12 + 3], c[1] += bones[i * 12 + 7], c[2] += bones[i * 12 + 11];
@@ -1576,8 +1868,16 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
     // His body: the whole skeleton's palette with a bone near his eye
     const uint64_t hash = mesh_hash(vb, vb_size);
     bool body = known_link_mesh(hash, count, vb_size);
-    if (!body && nearest < LINK_BONE_RADIUS * LINK_BONE_RADIUS) remember_link_mesh(hash, count, vb_size), body = true;
-    if (nearest < LINK_BONE_RADIUS * LINK_BONE_RADIUS) {  // (his body at the eye point: spawn settling)
+    if (body && nearest > LINK_FORGET_DISTANCE * LINK_FORGET_DISTANCE && !mirrored_block(slot0))
+        forget_link_mesh(hash, count, vb_size, sqrtf(nearest)), body = false;
+    // (learnt only centred on him: an enemy in sword reach has a bone this near his eye too, but centres away from him)
+    const bool centred = nearest < LINK_BONE_RADIUS * LINK_BONE_RADIUS && palette_sideways(bones, n, v) < LINK_BODY_CENTRE;
+    if (!body && centred) {
+        remember_link_mesh(hash, count, vb_size), body = true;
+        fprintf(stderr, "[link-log] his body: %llu indices, %d bones, vb %llu bytes\n", (unsigned long long)count, n,
+                (unsigned long long)vb_size);
+    }
+    if (centred) {  // (his body at the eye point: spawn settling)
         extern uint64_t renderer_present_count(void);
         g_body_at_eye = renderer_present_count() + 1;
     }

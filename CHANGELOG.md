@@ -9,7 +9,8 @@ Experimental SteamVR / OpenXR support (off by default; VR Options > Enable VR Mo
 - **Sword hits from your blade:** a slash hits with the game's three sword attack colliders, now placed along the blade in your right hand, so what gets cut is where you swing (Z-targeting no longer steers it).
 - **Aiming with the controller:** aimed items go where the right controller points.
 - **Slingshot:** a new Slingshot system shoots from the controller along where it points, following the game's own seed flight, with a 3D marker where the seed will land; the Slingshot model is held in the hand.
-- **Link's body hidden:** his small pieces (eyes, belt, pouches) and his hair stay hidden when his body leaves the eye point (rolls, swings, climbing, swimming, doors).
+- **Link's body hidden:** his small pieces (eyes, belt, pouches) and his hair stay hidden when his body leaves the eye point (rolls, swings, climbing, swimming, doors). Enemies that come close are no longer mistaken for Link and hidden.
+- **Beetle:** it launches from the right controller along where it points; the Beetle and its bracelet sit on your wrist; while it flies, the view switches to the game's own camera following it, and returns to 1st person when it's caught.
 
 ### Rendering
 - **Culling follows the headset:** objects are culled against the eyes' view, and their draw distance is measured along where you look.

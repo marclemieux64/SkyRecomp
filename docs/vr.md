@@ -297,6 +297,25 @@ The line, the update and the hit test were found with a memory search for positi
 drawn hilt's frame while the sword swings, and by watching which functions write them; the effect was confirmed in
 play (grass and the training logs cut where the controller's blade passes).
 
+### The Beetle (`runtime/hle/vr_beetle.c`, `vr_rig.c`, `runtime/hle/player.c`)
+
+- **Launch:** the Beetle is an actor (vtable main+0x1570498) with its own update (main+0x27e688, wrapped). Its position
+  is +0x144 (past positions +0x1b0/+0x1bc/+0x1c8), its heading +0x13c pitch / +0x13e yaw (16-bit angles, pitch negative
+  up; +0x1d4/+0x1d6 hold -pitch/yaw), its velocity +0x1e8, recomputed from the heading every update. On its first
+  update in flight it is moved just ahead of the right controller and its heading and velocity set along where the
+  controller points (Aim Items with the Controller); the game flies it from there. Checked headset-free with
+  `SKYRECOMP_BEETLE_TEST_DIR` in a test build: launched along +x, it flew along +x.
+- **In flight:** Link's actor +0x7d38 points at it from the launch to the catch (+0x7d98 while held); also +0x74 =
+  0x0f and +0x8d4c = 1. While it flies, 1st person hands over to the game's camera following it (as theatre), back
+  once it's caught (`SKYRECOMP_VR_BEETLE_FP=1` stays in 1st person). Log: `[vr-rig] the Beetle launched / caught`.
+- **On the wrist:** held, it is three draws on its own model matrix (rigid 330 indices: its blade; skinned 1464: its
+  body; skinned 96: its wings), and its bracelet a rigid 768 in a 28672-byte buffer - his hands' size, so the hands
+  code took it for his right hand; while the Beetle is out it isn't. The Beetle is placed against the bracelet as a
+  hand on the controller (rel = B^-1 M), turned 270 degrees about the forearm, then moved back along the forearm
+  (against the aim ray, 20 units) and lifted (10, world up); the bracelet takes the Beetle's rigid body's move.
+  Overrides: `SKYRECOMP_VR_BEETLE_ROLL`, `_SHIFT`, `_ARM_BACK`, `_LIFT`. `[beetle-near]` log lines list other draws by
+  it (how the bracelet was found).
+
 ### Frame rate and pacing
 
 - The frame rate setting (Video > Frame rate) offers 60, 120 and 144 FPS. The Skyward Sword simulation step follows

@@ -4755,6 +4755,11 @@ static void draw_(CmdRec *r, bool indexed) {
             vr_rig_set_hand_draw(hand);
             // (the sword or shield he holds: with that hand - vr_rig.c)
             const bool held = hand < 0 && vr_rig_held_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2]);
+            if (!vk_vr_eye()) {  // (RE: draws by the Beetle on his wrist - the launcher bracelet; vr_rig.c)
+                extern void vr_rig_beetle_near_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes,
+                                                    uint64_t count, uint64_t vb_size, int hand, bool held);
+                vr_rig_beetle_near_note((const float *)(uintptr_t)cam.addr, cam.size, NULL, 0, r->x[2], st.vbuf[0].size, hand, held);
+            }
             {   // (diagnostics: SKYRECOMP_VR_HAND_LOG=1) per eye: hand and held draws placed, sword draws seen
                 static int log = -1;
                 static uint64_t frame, n[2][3];
@@ -4782,10 +4787,22 @@ static void draw_(CmdRec *r, bool indexed) {
                 if (!(pr->vi->cbuf_mask & (1u << (idx + 3))) || !st.ubuf[0][idx].addr) continue;
                 const float *bones = (const float *)(uintptr_t)st.ubuf[0][idx].addr;
                 if (!vk_vr_eye()) vr_rig_skinned_note((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]);
-                if (vr_rig_held_skin_draw((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]))
-                    g_skin_bone_idx = idx;
+                if (!vk_vr_eye()) {  // (RE: draws by the Beetle on his wrist - the launcher bracelet; vr_rig.c)
+                    extern void vr_rig_beetle_near_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes,
+                                                        uint64_t count, uint64_t vb_size, int hand, bool held);
+                    vr_rig_beetle_near_note((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2],
+                                            st.vbuf[0].size, -1, false);
+                }
+                extern bool vr_rig_beetle_draw(const float *slot0, uint64_t size0, uint64_t count, uint64_t vb_size);
+                if (vr_rig_held_skin_draw((const float *)(uintptr_t)cam.addr, cam.size, bones, st.ubuf[0][idx].size, r->x[2]) ||
+                    vr_rig_beetle_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2], st.vbuf[0].size))
+                    g_skin_bone_idx = idx;  // (the Slingshot, or the Beetle on his wrist: its bones moved with the hand)
                 break;
             }
+        }
+        if (!skinned && cam.addr) {  // (the Beetle's rigid part on his wrist: its view block moved with the hand - vr_rig.c)
+            extern bool vr_rig_beetle_draw(const float *slot0, uint64_t size0, uint64_t count, uint64_t vb_size);
+            vr_rig_beetle_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2], st.vbuf[0].size);
         }
         if (!skinned && cam.addr) {  // (the door held open in VR: its leaf turned - vr_rig.c)
             extern void vr_rig_door_draw(const float *slot0, uint64_t size0);
