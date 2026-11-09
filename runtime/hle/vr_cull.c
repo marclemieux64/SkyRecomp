@@ -76,6 +76,17 @@ static void eye_forward_plane(float *f, const float eye_view[12]) {
         eye[k] = -(eye_view[0 * 4 + k] * eye_view[3] + eye_view[1 * 4 + k] * eye_view[7] + eye_view[2 * 4 + k] * eye_view[11]);
     }
     const float offset = p[0] * cam[0] + p[1] * cam[1] + p[2] * cam[2] + p[3];
+    {   // (the plane at the camera it was built from sits near it - the near distance. Far off: the camera read isn't
+        // the one culled with, and moving the plane by it would cull what's in front of the eyes. Left as the game's.)
+        static int said;
+        if (said < 3 || !(fabsf(offset) < 200.0f * len)) {
+            if (said < 3 || said % 600 == 0)
+                LOG("[vr-cull] forward plane: %.1f from the game camera%s\n", offset / len,
+                    fabsf(offset) < 200.0f * len ? "" : " - not that camera's: left as the game's");
+            said++;
+        }
+        if (!(fabsf(offset) < 200.0f * len)) return;
+    }
     const float sign = s > 0 ? len : -len;
     for (int k = 0; k < 3; k++) p[k] = sign * -eye_view[8 + k];
     p[3] = offset - (p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2]);

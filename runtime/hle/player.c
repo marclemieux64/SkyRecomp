@@ -58,6 +58,24 @@ int player_action(void) {
     return (int)*(const volatile uint32_t *)(uintptr_t)(actor + 0x118);
 }
 
+// The Beetle in flight, launch to catch: Link's actor +0x74 = 0x0f (his item state: 0x1a aiming it, 0x2f standing)
+// and +0x8d4c = 1 (set at the launch, cleared ~100 frames after the catch). Measured 2026-11-09 headset-free with
+// SKYRECOMP_LINK_DIFF / SKYRECOMP_WORD_WATCH (two launches: both words change on the launch frame, +0x74 goes back to
+// 0x1a the frame the Beetle is in his hand again, return flight included). (main+0x1829ea8 bit 16 is the game camera
+// following it: it ends ~200 frames in, before the return.)
+// Also - the main sign, since a release was missed sometimes in VR (motion controls: the item state needn't be 0x0f) -
+// Link's actor +0x7d38 points at the Beetle actor (vtable main+0x1570498) exactly from the launch to the catch (held,
+// it is at +0x7d98 instead and +0x7d38 is 0). Measured 2026-11-09 the same way, through steering, piloting and a recall.
+#define BEETLE_VTABLE (MAIN_BASE + 0x1570498)
+static bool player_beetle_flying_live(void) {
+    const uint64_t actor = *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF;
+    if (!heap_ptr(actor)) return false;
+    const uint64_t b = *(const volatile uint64_t *)(uintptr_t)(actor + 0x7d38);
+    if (heap_ptr(b) && *(const volatile uint64_t *)(uintptr_t)b == BEETLE_VTABLE) return true;
+    return *(const volatile uint32_t *)(uintptr_t)(actor + 0x74) == 0x0f &&
+           *(const volatile uint32_t *)(uintptr_t)(actor + 0x8d4c) == 1;
+}
+
 #define GAME_CAMERA_VIEW 0x7002bfda90ull
 
 static bool game_camera_view_live(float view[12]) {
@@ -79,7 +97,7 @@ static bool game_camera_view_live(float view[12]) {
 // next frame while a frame is drawn: what the draws need from game memory is taken when their list is submitted, and
 // the replay thread reads that instead of live memory.
 typedef struct PlayerSnap {
-    bool eye_ok, feet_ok, cam_ok;
+    bool eye_ok, feet_ok, cam_ok, beetle;
     float eye[3], feet, cam[12];
 } PlayerSnap;
 static __thread const PlayerSnap *tl_snap;
@@ -90,6 +108,7 @@ void player_snapshot_take(void *out) {
     s->eye_ok = player_eye_live(s->eye);
     s->feet_ok = player_feet_y_live(&s->feet);
     s->cam_ok = game_camera_view_live(s->cam);
+    s->beetle = player_beetle_flying_live();
 }
 void player_snapshot_use(const void *snap) { tl_snap = snap; }  // (this thread; NULL: live memory again)
 
@@ -104,6 +123,8 @@ bool player_feet_y(float *y) {
     if (tl_snap->feet_ok && y) *y = tl_snap->feet;
     return tl_snap->feet_ok;
 }
+bool player_beetle_flying(void) { return tl_snap ? tl_snap->beetle : player_beetle_flying_live(); }
+
 bool game_camera_view(float view[12]) {
     if (!tl_snap) return game_camera_view_live(view);
     if (tl_snap->cam_ok && view) memcpy(view, tl_snap->cam, sizeof tl_snap->cam);
