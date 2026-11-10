@@ -42,7 +42,7 @@ static bool world_in_menus(void) {
 
 // ---- the scene root: global at main+0x2bfe688; children: array +0xf0, capacity +0xf8, count +0xfc
 #define SCENE_ROOT_PTR (MAIN_BASE + 0x2bfe688)
-#define SCENE_ROOT_VTABLE 0x7001699050ull
+#define SCENE_ROOT_VTABLE (MAIN_BASE + 0x1699050ull)
 enum { MAX_CHILDREN = 1024 };
 static uint64_t g_snap[MAX_CHILDREN], g_snap_vt[MAX_CHILDREN];  // (children; their vtables when taken)
 static uint32_t g_nsnap;
@@ -50,7 +50,7 @@ static uint64_t g_snap_frame = ~0ull, g_replay_frame = ~0ull;
 
 static uint64_t scene_root(void) {
     const uint64_t r = *(const uint64_t *)(uintptr_t)SCENE_ROOT_PTR;
-    return r >= 0x7000000000ull && r < 0x7800000000ull && *(const uint64_t *)(uintptr_t)r == SCENE_ROOT_VTABLE ? r : 0;
+    return r >= (MAIN_BASE + 0x0ull) && r < 0x7800000000ull && *(const uint64_t *)(uintptr_t)r == SCENE_ROOT_VTABLE ? r : 0;
 }
 
 // (execute phase of an unpaused frame) The list fills during the phase and is emptied before the draw: the fullest
@@ -108,7 +108,7 @@ bool vr_world_menu_active(void) {
     return last != ~0ull && now - last < 30;
 }
 
-#define PRE_EXECUTE 0x7000b175c0ull
+#define PRE_EXECUTE (MAIN_BASE + 0xb175c0ull)
 static GuestFn g_orig_pre_execute;
 // (RE) SKYRECOMP_RE_ACTORS=<frame>: the scene root's children that frame - address, vtable, and the floats where
 // Link's actor keeps his position (+0x148 x, +0x150 z) - to find objects near him (a door) and their fields
@@ -130,7 +130,7 @@ static void re_actors(void) {
         static uint32_t val, base;
         if (on < 0) on = getenv("SKYRECOMP_RE_CANCEL_DOOR") != NULL, val = on ? (uint32_t)strtoul(getenv("SKYRECOMP_RE_CANCEL_DOOR"), NULL, 16) : 0;
         const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-        const bool have_link = link >= 0x7000000000ull && link < 0x7800000000ull;
+        const bool have_link = link >= (MAIN_BASE + 0x0ull) && link < 0x7800000000ull;
         static bool armed;  // (Link stood at a door: the doubling that follows is the door's room)
         {
             static int said;
@@ -196,11 +196,11 @@ static void re_actors(void) {
     }
     if (at < 0 || (long)renderer_present_count() < at || !g_nsnap) return;
     at = -1;
-    LOG("[re] room controller *(0x7002bfece8) = %#llx\n", (unsigned long long)*(const uint64_t *)(uintptr_t)0x7002bfece8ull);
+    LOG("[re] room controller *(0x7002bfece8) = %#llx\n", (unsigned long long)*(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x2bfece8ull));
     {   // (every object at the door's exact spot: a vtable in main at +0, (790.6, *, -2183) at +0x144 or +0x148)
-        for (uint64_t a = 0x7005000000ull; a < 0x7008000000ull; a += 8) {
+        for (uint64_t a = (MAIN_BASE + 0x5000000ull); a < (MAIN_BASE + 0x8000000ull); a += 8) {
             const uint64_t vt = *(const uint64_t *)(uintptr_t)a;
-            if (vt < 0x7001000000ull || vt >= 0x7002000000ull) continue;
+            if (vt < (MAIN_BASE + 0x1000000ull) || vt >= (MAIN_BASE + 0x2000000ull)) continue;
             for (int o = 0x144; o <= 0x148; o += 4) {
                 const float *p = (const float *)(uintptr_t)(a + o);
                 if (fabsf(p[0] - 790.6f) < 0.5f && fabsf(p[2] + 2183.0f) < 0.5f)
@@ -211,20 +211,20 @@ static void re_actors(void) {
         }
     }
     {   // (the door object: 16-bit values from +0x130 - its angles, 22.5 degrees = 0x1000)
-        const uint16_t *h = (const uint16_t *)(uintptr_t)(0x7006229168ull + 0x130);
+        const uint16_t *h = (const uint16_t *)(uintptr_t)((MAIN_BASE + 0x6229168ull) + 0x130);
         char line[512];
         int len = snprintf(line, sizeof line, "[re] door +0x130..:");
         for (int k = 0; k < 48; k++) len += snprintf(line + len, sizeof line - len, " %04x", h[k]);
         LOG("%s\n", line);
     }
     {   // (the door object - type 0x7001600da0 - before A: its position and room bytes)
-        const uint8_t *d = (const uint8_t *)(uintptr_t)0x7006229168ull;
+        const uint8_t *d = (const uint8_t *)(uintptr_t)(MAIN_BASE + 0x6229168ull);
         LOG("[re] door 0x7006229168 vtable %#llx pos %.1f %.1f %.1f bytes +0x7b8..: %02x %02x %02x %02x %02x %02x %02x %02x\n",
             (unsigned long long)*(const uint64_t *)d, *(const float *)(d + 0x144), *(const float *)(d + 0x148),
             *(const float *)(d + 0x14c), d[0x7b8], d[0x7b9], d[0x7ba], d[0x7bb], d[0x7bc], d[0x7bd], d[0x7be], d[0x7bf]);
     }
     {   // (the door object that activated the hallway: where it keeps its position - floats near (790.6, *, -2183))
-        const float *f = (const float *)(uintptr_t)0x700622a908ull;
+        const float *f = (const float *)(uintptr_t)(MAIN_BASE + 0x622a908ull);
         for (int k = 0; k < 0x900 / 4; k++)
             if (fabsf(f[k] - 790.6f) < 1.0f || fabsf(f[k] + 2183.0f) < 1.0f)
                 LOG("[re] door object +%#x = %.2f\n", k * 4, f[k]);
@@ -232,14 +232,14 @@ static void re_actors(void) {
             ((const uint8_t *)f)[0x7bd], ((const uint8_t *)f)[0x7be]);
     }
     {   // (the hallway's room object: its create phases - f_7000f0f19c runs table[index] until done)
-        const uint64_t room = 0x700622b0e8ull, ph = *(const uint64_t *)(uintptr_t)(room + 0x98);
+        const uint64_t room = (MAIN_BASE + 0x622b0e8ull), ph = *(const uint64_t *)(uintptr_t)(room + 0x98);
         LOG("[re] room %#llx vtable %#llx phase record %#llx\n", (unsigned long long)room,
             (unsigned long long)*(const uint64_t *)(uintptr_t)room, (unsigned long long)ph);
-        if (ph >= 0x7000000000ull && ph < 0x7800000000ull) {
+        if (ph >= (MAIN_BASE + 0x0ull) && ph < 0x7800000000ull) {
             const uint64_t table = *(const uint64_t *)(uintptr_t)(ph + 0x10);
             const int idx = *(const int16_t *)(uintptr_t)(ph + 0xa);
             LOG("[re] phase state %u index %d table %#llx\n", *(const uint16_t *)(uintptr_t)(ph + 8), idx, (unsigned long long)table);
-            for (int k = 0; table >= 0x7000000000ull && table < 0x7800000000ull && k < 12; k++) {
+            for (int k = 0; table >= (MAIN_BASE + 0x0ull) && table < 0x7800000000ull && k < 12; k++) {
                 const uint64_t f = *(const uint64_t *)(uintptr_t)(table + k * 8);
                 LOG("[re]   phase %d: %#llx%s\n", k, (unsigned long long)f, k == idx ? "  <- current" : "");
                 if (!f) break;
@@ -254,7 +254,7 @@ static void re_actors(void) {
         const char *e = getenv("SKYRECOMP_RE_VTABLE");
         const uint64_t vt = e ? strtoull(e, NULL, 16) : 0;
         int found = 0;
-        for (uint64_t a = 0x7005000000ull; vt && a < 0x7008000000ull; a += 0x10)
+        for (uint64_t a = (MAIN_BASE + 0x5000000ull); vt && a < (MAIN_BASE + 0x8000000ull); a += 0x10)
             if (*(const uint64_t *)(uintptr_t)a == vt) {
                 bool in_root = false;
                 for (uint32_t k = 0; k < g_nsnap && !in_root; k++) in_root = g_snap[k] == a;
@@ -268,7 +268,7 @@ static void re_actors(void) {
         const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
         const float *lp = (const float *)(uintptr_t)(link + 0x148);
         LOG("[re] Link actor %#llx at %.1f %.1f %.1f\n", (unsigned long long)link, lp[0], lp[1], lp[2]);
-        for (uint64_t a = 0x7005000000ull; a < 0x7008000000ull; a += 0x8) {
+        for (uint64_t a = (MAIN_BASE + 0x5000000ull); a < (MAIN_BASE + 0x8000000ull); a += 0x8) {
             const float *p = (const float *)(uintptr_t)(a + 0x148);
             if (!(fabsf(p[0] - lp[0]) < 150 && fabsf(p[2] - lp[2]) < 150 && fabsf(p[1] - lp[1]) < 400)) continue;
             const uint64_t vt = *(const uint64_t *)(uintptr_t)a;
@@ -280,7 +280,7 @@ static void re_actors(void) {
     }
     for (uint32_t i = 0; list && i < n && i < 2048; i++) {
         const uint64_t a = list[i];
-        if (a < 0x7000000000ull || a >= 0x7800000000ull) continue;
+        if (a < (MAIN_BASE + 0x0ull) || a >= 0x7800000000ull) continue;
         const float *f = (const float *)(uintptr_t)(a + 0x148);
         LOG("[re] %4u %#llx vt %#llx pos %.1f %.1f %.1f\n", i, (unsigned long long)a,
             (unsigned long long)*(const uint64_t *)(uintptr_t)a, f[0], f[1], f[2]);
@@ -301,7 +301,7 @@ static void re_room(Cpu *c) {
     }
     if (!on) return;
     const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-    if (link < 0x7000000000ull || link >= 0x7800000000ull || *(const uint32_t *)(uintptr_t)(link + 0x118) != 0x6a) return;
+    if (link < (MAIN_BASE + 0x0ull) || link >= 0x7800000000ull || *(const uint32_t *)(uintptr_t)(link + 0x118) != 0x6a) return;
     static int wait;
     if (++wait < 120) return;  // (standing at the door a while)
     uint64_t saved[31];
@@ -309,12 +309,12 @@ static void re_room(Cpu *c) {
     const uint64_t sp = c->sp;
     // what an object's update calls as the hallway is activated (f_7000789748 at 0x7000789d50): f_7000e0854c(
     // *(0x7002bf9d90), mgr (its +0x7bd), room (its +0x7bc)) - measured (0, 1)
-    c->x[0] = *(const uint64_t *)(uintptr_t)0x7002bf9d90ull;
+    c->x[0] = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x2bf9d90ull);
     c->x[1] = (uint32_t)mgr;
     c->x[2] = room;
     LOG("[re] calling f_7000e0854c(%#llx, %u, %u) at frame %llu\n", (unsigned long long)c->x[0], (unsigned)mgr, room,
         (unsigned long long)renderer_present_count());
-    guest_call(c, 0x7000e0854cull);
+    guest_call(c, (MAIN_BASE + 0xe0854cull));
     LOG("[re] returned %#llx\n", (unsigned long long)c->x[0]);
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp;
@@ -347,7 +347,7 @@ static void pre_execute(Cpu *c) {
 
 // preDraw implementations reading the draw mask (watchpoint), called through vtables (so through the dispatcher,
 // where overrides apply): the base node's, the world (stage) node's, and the actor base's.
-static const uint64_t k_pre_draw[] = {0x7000ec620cull, 0x7000aaf4acull, 0x7000b1756cull};
+static const uint64_t k_pre_draw[] = {(MAIN_BASE + 0xec620cull), (MAIN_BASE + 0xaaf4acull), (MAIN_BASE + 0xb1756cull)};
 static GuestFn g_orig[sizeof k_pre_draw / sizeof k_pre_draw[0]];
 static void pre_draw(Cpu *c, int i) {
     volatile uint32_t *mask = (volatile uint32_t *)(uintptr_t)DRAW_MASK;
@@ -363,7 +363,7 @@ static void pre_draw2(Cpu *c) { pre_draw(c, 2); }
 
 // The map's "enter full screen" state callback (called once through a state table when the map opens): pending
 // draw mask |= 0x10, and [[main+0x183c9a0] + 0x2188c] = 0.
-#define MAP_DRAW_OFF 0x7000bce320ull
+#define MAP_DRAW_OFF (MAIN_BASE + 0xbce320ull)
 static GuestFn g_orig_map_draw_off;
 static void map_draw_off(Cpu *c) {
     if (world_in_menus()) return;

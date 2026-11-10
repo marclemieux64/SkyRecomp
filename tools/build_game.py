@@ -33,7 +33,7 @@ OUT_DLL = os.path.abspath("extracted/skygame.dll")
 IMPLIB = os.path.abspath("skyrecomp.dll.a")
 
 # Matching GAMELIB_ID for skyrecomp.exe
-GAMELIB_ID = "dd813db2801b3003"
+GAMELIB_ID = "7d549f7e81e92c48"
 
 os.makedirs(OBJ_DIR, exist_ok=True)
 CACHE_ID = os.path.join(OBJ_DIR, 'build.id')
@@ -112,10 +112,10 @@ def main():
         hle_file = os.path.abspath("runtime/hle/hle_symbols.txt")
 
         mod_configs = {
-            "main": ("0x7000000000", []),
-            "sdk": ("0x7030000000", ["--hle", hle_file]),
-            "subsdk0": ("0x7032000000", []),
-            "subsdk1": ("0x7034000000", []),
+            "main": ("0x7100004000", []),
+            "sdk": ("0x712E74B000", ["--hle", hle_file]),
+            "subsdk0": ("0x712D037000", []),
+            "subsdk1": ("0x712D9FF000", []),
         }
 
         def run_gen(mod):

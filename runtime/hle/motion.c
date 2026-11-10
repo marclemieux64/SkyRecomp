@@ -52,7 +52,7 @@ static _Atomic int auto_joycon;
 //  - the HUD and background audio keep running normally; neither blanket HUD hiding nor master muting is needed.
 // A run ends when the state returns to 0 after the prompt, or when the coordinator stops being called; it is never
 // answered for more than CAL_MAX_FRAMES. SKYRECOMP_VR_MOTION_CALIBRATION=1: show the game's own prompt in VR too.
-#define LEGACY_CALIBRATION_COORDINATOR 0x7000dd2a68ull
+#define LEGACY_CALIBRATION_COORDINATOR (MAIN_BASE + 0xdd2a68ull)
 enum { CAL_MAX_FRAMES = 1200, CAL_SETTLE_FRAMES = 45 };
 static GuestFn legacy_calibration_coordinator;
 static GuestFn legacy_calibration_begin, legacy_calibration_update;
@@ -192,10 +192,10 @@ static void temp_gate_be0_hook(Cpu *c) { const uint64_t p = c->x[0]; temp_gate_b
 
 void motion_vr_init(void) {
     if (getenv("SKYRECOMP_TEMP_MOTION_GATE")) {
-        temp_gate_aa8 = dispatch_lookup(0x7000a17aa8ull);
-        temp_gate_be0 = dispatch_lookup(0x7000a17be0ull);
-        if (temp_gate_aa8) hle_override(0x7000a17aa8ull, temp_gate_aa8_hook, "temp_gate_aa8");
-        if (temp_gate_be0) hle_override(0x7000a17be0ull, temp_gate_be0_hook, "temp_gate_be0");
+        temp_gate_aa8 = dispatch_lookup((MAIN_BASE + 0xa17aa8ull));
+        temp_gate_be0 = dispatch_lookup((MAIN_BASE + 0xa17be0ull));
+        if (temp_gate_aa8) hle_override((MAIN_BASE + 0xa17aa8ull), temp_gate_aa8_hook, "temp_gate_aa8");
+        if (temp_gate_be0) hle_override((MAIN_BASE + 0xa17be0ull), temp_gate_be0_hook, "temp_gate_be0");
     }
     legacy_calibration_coordinator = dispatch_lookup(LEGACY_CALIBRATION_COORDINATOR);
     if (legacy_calibration_coordinator)

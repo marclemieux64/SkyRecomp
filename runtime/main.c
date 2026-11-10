@@ -189,12 +189,19 @@ static void boot(const char *root) {
     dispatch_init();
     { extern void swkbd_live_init(void); swkbd_live_init(); }
     { extern void custom_tex_init(void); custom_tex_init(); }
-    { extern void motion_vr_init(void); motion_vr_init(); }  // VR: skip the obsolete Joy-Con calibration modal
-    { extern void vr_world_init(void); vr_world_init(); }  // (VR: the world keeps drawing behind the map)
-    { extern void vr_cull_init(void); vr_cull_init(); }  // (VR: objects outside the game camera's view are drawn)
-    { extern void vr_sword_init(void); vr_sword_init(); }  // (VR: the sword's hits follow the blade in your hand)
-    { extern void vr_slingshot_init(void); vr_slingshot_init(); }  // (VR: the Slingshot shoots where you point)
-    { extern void vr_beetle_init(void); vr_beetle_init(); }  // (VR: the Beetle launches from the controller)
+    // VR's game hooks: their addresses and fields were measured on game 1.0.0 (main's build id d824d4b1...). On 1.0.1
+    // they'd hook other code, so - as upstream does with its 1.0.0 cheats (runtime/ui/cheats.mm) - they stay off there;
+    // VR itself still renders and tracks (runtime/hle/player.c reports no player, so 1st person falls back to 3rd).
+    if (g_is_skyward_100) {
+        { extern void motion_vr_init(void); motion_vr_init(); }  // VR: skip the obsolete Joy-Con calibration modal
+        { extern void vr_world_init(void); vr_world_init(); }  // (VR: the world keeps drawing behind the map)
+        { extern void vr_cull_init(void); vr_cull_init(); }  // (VR: objects outside the game camera's view are drawn)
+        { extern void vr_sword_init(void); vr_sword_init(); }  // (VR: the sword's hits follow the blade in your hand)
+        { extern void vr_slingshot_init(void); vr_slingshot_init(); }  // (VR: the Slingshot shoots where you point)
+        { extern void vr_beetle_init(void); vr_beetle_init(); }  // (VR: the Beetle launches from the controller)
+    } else if (g_is_skyward) {
+        LOG("[vr] game hooks off: they are for game 1.0.0 (this is another version) - VR renders in 3rd person\n");
+    }
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

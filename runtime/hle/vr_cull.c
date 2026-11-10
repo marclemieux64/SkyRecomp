@@ -132,12 +132,12 @@ static void scale_draw_distance(float *f, float k) {
     if (logged != k) LOG("[cull] draw distance x%.2f\n", k), logged = k;
 }
 
-static const uint64_t k_update[] = {0x7000b64260ull, 0x7000b645f0ull, 0x7000e1a120ull};
+static const uint64_t k_update[] = {(MAIN_BASE + 0xb64260ull), (MAIN_BASE + 0xb645f0ull), (MAIN_BASE + 0xe1a120ull)};
 static GuestFn g_orig[sizeof k_update / sizeof k_update[0]];
 static void update(Cpu *c, int i) {
     g_orig[i](c);
     const uint64_t cam = *(const uint64_t *)(uintptr_t)CULL_CAMERA_PTR;
-    if (cam < 0x7000000000ull || cam >= 0x7800000000ull) return;
+    if (cam < (MAIN_BASE + 0x0ull) || cam >= 0x7800000000ull) return;
     float *f = (float *)(uintptr_t)cam;
     // (the forward plane as we left it last: unchanged, the game didn't rebuild it - replacing or scaling it again
     // would compound, whichever of the three camera updates ran)

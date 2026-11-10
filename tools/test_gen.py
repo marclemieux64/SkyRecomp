@@ -1,8 +1,12 @@
 """Function-boundary regressions; no game files needed: python tools/test_gen.py."""
 import unittest
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from collections import Counter
 
-from gen import Module, SKY_TIMING_STORES
+from gen import Module, SKY_BUILDS, sky_stores_for
 from lifter import Lifter
 from patches import (BEETLE_TIMER_SITE, DAMAGE_SHIFT_SITE, DASH_CAP_SITE, DASH_START_SITE, DASH_USE_SITE,
                      DASH_GAUGE_SITE, DROP_END_SITE, DROP_KIND_SITES, DROP_THIN_SITE, FLIGHT_SPEED_SITE,
@@ -11,6 +15,63 @@ from patches import (BEETLE_TIMER_SITE, DAMAGE_SHIFT_SITE, DASH_CAP_SITE, DASH_S
 
 
 class JumpTableBoundaryTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('clang'), 'clang is required for emitted-C validation')
+    def test_interior_generated_c_compiles(self):
+        m, _ = self.module(9)
+        m.words = [0xd503201f, 0xd65f03c0]
+        m.hi = m.lo + 8
+        m.is_las = m.is_skyward = False
+        m.interior = True
+        code = '#include "cpu.h"\n' + '\n'.join(m.emit_function(m.lo, m.hi, {m.lo}, {}, {}))
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'interior.c'
+            source.write_text(code)
+            result = subprocess.run(['clang', '-fsyntax-only', '-Werror=implicit-function-declaration',
+                                     '-I' + str(Path(__file__).resolve().parents[1] / 'runtime'), str(source)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_interior_entry_preserves_optimized_normal_body(self):
+        m, _ = self.module(9)
+        m.interior = True
+        m.is_las = m.is_skyward = False
+        code = '\n'.join(m.emit_function(m.lo, m.hi, set(), {}, {}))
+        self.assertIn('c->pc = c->x[31]; c->x[31] = 0;', code)
+        self.assertIn('return f_1000_any(c);', code)
+        self.assertEqual(code.count('L_dispatch:'), 1)
+        self.assertIn('cold, noinline, optnone', code)
+
+    def test_out_of_line_jump_table_adds_external_boundary(self):
+        m, target = self.module(9)
+        m.words = [0xd61f0160, 0xd65f03c0, 0xd65f03c0]  # br x11; ret; ret
+        m.hi = m.lo + 12
+        m.jump_table = lambda *args: [m.lo + 4, m.lo + 8]
+        labels, external, tables = m.scan(m.lo, m.lo + 8)
+        self.assertIn(m.lo + 8, external)
+        self.assertIn(m.lo + 4, labels)
+        self.assertEqual(tables[m.lo], 'all')
+
+    def test_relocated_vanilla_cheat_and_branch_labels(self):
+        base = 0x7100004000
+        delta = base - 0x7000000000
+        for old, word, expected in [(STAMINA_STORE_SITE, 0xb90002e8, 'rt_cheat_stamina'),
+                                    (DROP_THIN_SITE, 0x14000028, f'L_{0x7000b90844 + delta:x}')]:
+            m, _ = self.module(9)
+            m.base = base
+            m.lo = old + delta
+            m.words = [word, 0xd65f03c0]
+            m.hi = m.lo + 8
+            m.is_las = False
+            m.is_skyward = True
+            m.sky_patch_delta = delta
+            m.lifter = Lifter(base, 'c')
+            code = '\n'.join(m.emit_function(m.lo, m.hi, set(), {}, {}))
+            self.assertIn(expected, code)
+            self.assertNotIn('goto L_7000', code)
+            m.sky_patch_delta = None  # 1.0.1 cheat addresses have not been verified.
+            code = '\n'.join(m.emit_function(m.lo, m.hi, set(), {}, {}))
+            self.assertNotIn('extern int rt_', code)
+
     def module(self, gap, loaded=False):
         m = Module.__new__(Module)
         m.base = m.lo = 0x1000
@@ -59,26 +120,64 @@ class JumpTableBoundaryTest(unittest.TestCase):
                 m.lifter = Lifter(m.base, simd)
                 self.assertFalse(m.computed_target(target - 4, m.lo))
 
-    def test_sky_timing_scales_both_registers_and_stores_only_for_sky(self):
-        for simd in ('c', 'asm'):
-            for sky in (False, True):
-                with self.subTest(simd=simd, sky=sky):
-                    m, _ = self.module(9)
-                    m.lo = m.base = min(SKY_TIMING_STORES)
-                    m.words = [0xD503201F] * ((max(SKY_TIMING_STORES) - m.lo) // 4 + 2)
-                    for pc, (_, _, word) in SKY_TIMING_STORES.items():
-                        m.words[(pc - m.lo) // 4] = word
-                    m.words[-1] = 0xD65F03C0
-                    m.hi = m.lo + len(m.words) * 4
-                    m.is_las = False
-                    m.is_skyward = sky
-                    m.lifter = Lifter(m.base, simd)
-                    code = '\n'.join(m.emit_function(m.lo, m.hi, set(), {}, {}))
-                    self.assertEqual(code.count('extern float rt_sky_frame_'), 2 if sky else 0)
-                    if sky:
-                        self.assertIn('*(f32a *)&c->v[0] = rt_sky_frame_step(*(f32a *)&c->v[0])', code)
-                        self.assertIn('*(f32a *)&c->v[1] = rt_sky_frame_ms(*(f32a *)&c->v[1])', code)
-                        self.assertNotIn('VSF32(', code)  # (simd.h isn't included with --simd asm)
+    def test_sky_timing_hooks_follow_the_build(self):
+        base = 0x7100004000  # the main module's base
+        builds = {'1.0.0': {base + o: v for o, v in SKY_BUILDS['d824d4b1bbd45d03668380d6d041ba4ca00a64ff'].items()},
+                  '1.0.1': {base + o: v for o, v in SKY_BUILDS['5441af3c89f97e1d'].items()}}
+        for name, stores in builds.items():
+            for simd in ('c', 'asm'):
+                for sky in (False, True):
+                    with self.subTest(build=name, simd=simd, sky=sky):
+                        m, _ = self.module(9)
+                        m.lo = m.base = min(stores)
+                        m.words = [0xD503201F] * ((max(stores) - m.lo) // 4 + 2)
+                        for pc, (_, _, word) in stores.items():
+                            m.words[(pc - m.lo) // 4] = word
+                        m.words[-1] = 0xD65F03C0
+                        m.hi = m.lo + len(m.words) * 4
+                        m.is_las = False
+                        m.sky_stores = stores if sky else None
+                        m.is_skyward = sky
+                        m.lifter = Lifter(m.base, simd)
+                        code = '\n'.join(m.emit_function(m.lo, m.hi, set(), {}, {}))
+                        self.assertEqual(code.count('extern float rt_sky_frame_'), 2 if sky else 0)
+                        if sky:
+                            self.assertIn('*(f32a *)&c->v[0] = rt_sky_frame_step(*(f32a *)&c->v[0])', code)
+                            self.assertIn('*(f32a *)&c->v[1] = rt_sky_frame_ms(*(f32a *)&c->v[1])', code)
+                            self.assertIn('ST32(c->x[8] + 0xd38ull', code)
+                            self.assertIn('ST32(c->x[8] + 0xd3cull', code)
+                            self.assertNotIn('VSF32(', code)  # (simd.h isn't included with --simd asm)
+
+    def test_sky_timing_refuses_a_binary_with_other_instructions(self):
+        stores = {0x7100004000 + o: v for o, v in SKY_BUILDS['5441af3c89f97e1d'].items()}
+        m, _ = self.module(9)
+        m.lo = m.base = min(stores)
+        m.words = [0xD503201F] * ((max(stores) - m.lo) // 4 + 2)  # no store at the timing addresses
+        m.words[-1] = 0xD65F03C0
+        m.hi = m.lo + len(m.words) * 4
+        m.is_las = False
+        m.sky_stores = stores
+        m.is_skyward = True
+        m.lifter = Lifter(m.base, 'c')
+        with self.assertRaises(AssertionError):
+            m.emit_function(m.lo, m.hi, set(), {}, {})
+
+    def test_known_builds_by_build_id_prefix(self):
+        self.assertEqual(sky_stores_for('D824D4B1BBD45D03668380D6D041BA4CA00A64FF'),
+                         SKY_BUILDS['d824d4b1bbd45d03668380d6d041ba4ca00a64ff'])
+        self.assertEqual(sky_stores_for('5441af3c89f97e1d' + '00' * 12), SKY_BUILDS['5441af3c89f97e1d'])
+        self.assertIsNone(sky_stores_for('00' * 32))
+        self.assertIsNone(sky_stores_for('5441af3c89f97e1e'))  # one byte off: not 1.0.1
+        self.assertIsNone(sky_stores_for(''))
+        self.assertIsNone(sky_stores_for(None))
+
+    def test_1_0_1_timing_stores_are_the_same_instructions(self):
+        # Read from the 1.0.1 main module (decoded text, offsets 0x104a4fc and 0x104a520): str s0,[x8,#0xd38] and
+        # str s1,[x8,#0xd3c]. The 1.0.0 offsets hold other code in 1.0.1, so the hooks moved with the build.
+        s = SKY_BUILDS['5441af3c89f97e1d']  # (offsets from the main module's base)
+        self.assertEqual(s[0x104a4fc], (0, 0xd38, 0xbd0d3900))
+        self.assertEqual(s[0x104a520], (1, 0xd3c, 0xbd0d3d01))
+        self.assertNotIn(0x104a1ac, s)
 
 
     def test_sky_patches_only_for_sky(self):

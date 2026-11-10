@@ -18,11 +18,11 @@ extern "C" {
 #include "../settings.h"
 }
 
-#define SAVE_HEALTH 0x7005AF0056ull  // u16 heart capacity, u16 (unused), u16 current health: quarter hearts
-#define SAVE_RUPEES 0x7005AEB7B2ull  // u16
+#define SAVE_HEALTH (MAIN_BASE + 0x5AF0056ull)  // u16 heart capacity, u16 (unused), u16 current health: quarter hearts
+#define SAVE_RUPEES (MAIN_BASE + 0x5AEB7B2ull)  // u16
 static volatile uint16_t &U16(uint64_t a) { return *(volatile uint16_t *)(uintptr_t)a; }
-#define PLAYER 0x7001826AD0ull         // dAcPy_c * (Link), null without him
-#define PLAYER_VTABLE 0x7001637D28ull  // its vtable (main+0xab3c2c sets it)
+#define PLAYER (MAIN_BASE + 0x1826AD0ull)         // dAcPy_c * (Link), null without him
+#define PLAYER_VTABLE (MAIN_BASE + 0x1637D28ull)  // its vtable (main+0xab3c2c sets it)
 
 extern "C" int rt_cheat_stamina(void) { return g_settings.cheat_stamina; }
 extern "C" int rt_cheat_beetle(void) { return g_settings.cheat_beetle; }
@@ -30,7 +30,7 @@ extern "C" int rt_cheat_dash(void) { return g_settings.cheat_dash; }
 
 // Once per presented frame (render thread), from save_editor_frame.
 extern "C" void cheats_frame(void) {
-    if (!g_is_skyward) return;
+    if (!g_is_skyward_100) return;
     if (g_settings.cheat_skyward) {  // the community code's "Lightning Skyward Sword", on Link himself
         uint64_t p = *(volatile uint64_t *)(uintptr_t)PLAYER;
         if (p && *(volatile uint64_t *)(uintptr_t)p == PLAYER_VTABLE) {

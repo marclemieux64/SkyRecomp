@@ -34,13 +34,13 @@ static void bt_check(uint64_t a, uint64_t lr, uint64_t x0) {
     for (int i = 0; i < bt_n; i++)
         if (bt_addrs[i] == a && !atomic_exchange(&bt_done[i], 1)) {
             if (i == 0) g_bt_first_x0 = x0;
-            uint64_t vt = x0 >= 0x7000000000ull && x0 < 0x7800000000ull ? *(uint64_t *)(uintptr_t)x0 : 0;
-            uint64_t v100 = vt >= 0x7000000000ull && vt < 0x7800000000ull ? *(uint64_t *)(uintptr_t)(vt + 0x100) : 0;
-            uint64_t p8 = x0 >= 0x7000000000ull && x0 < 0x7800000000ull ? *(uint64_t *)(uintptr_t)(x0 + 8) : 0;
+            uint64_t vt = x0 >= (MAIN_BASE + 0x0ull) && x0 < 0x7800000000ull ? *(uint64_t *)(uintptr_t)x0 : 0;
+            uint64_t v100 = vt >= (MAIN_BASE + 0x0ull) && vt < 0x7800000000ull ? *(uint64_t *)(uintptr_t)(vt + 0x100) : 0;
+            uint64_t p8 = x0 >= (MAIN_BASE + 0x0ull) && x0 < 0x7800000000ull ? *(uint64_t *)(uintptr_t)(x0 + 8) : 0;
             Cpu *kernel_current_cpu(void);
             Cpu *g_fnprof_cpu = kernel_current_cpu();  // (this thread's registers: the call's x1, x2)
             const uint64_t x19 = g_fnprof_cpu ? g_fnprof_cpu->x[19] : 0;
-            const bool x19_ok = x19 >= 0x7000000000ull && x19 < 0x7800000000ull;
+            const bool x19_ok = x19 >= (MAIN_BASE + 0x0ull) && x19 < 0x7800000000ull;
             fprintf(stderr, "[fnprof-bt] %llx entered from guest lr %llx x0 %llx x1 %llx x2 %llx (vtable %llx, +0x100 %llx, [x0+8] %llx) "
                     "x19 %llx (vtable %llx, +0x148 %.1f %.1f %.1f):\n",
                     (unsigned long long)a, (unsigned long long)lr, (unsigned long long)x0,
@@ -117,7 +117,7 @@ volatile int g_door_nowall;
 volatile uint64_t g_door_nowall_obj;
 
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
-    if (g_door_nowall && a == 0x7000facfe4ull && lr >= 0x7000ab7cf4ull && lr < 0x7000ad99e4ull) {
+    if (g_door_nowall && a == (MAIN_BASE + 0xfacfe4ull) && lr >= (MAIN_BASE + 0xab7cf4ull) && lr < (MAIN_BASE + 0xad99e4ull)) {
         // (a count of his checks to skip: the last one runs again, with the bit cleared)
         static uint32_t bit;  // (SKYRECOMP_DOOR_NOWALL_BIT: which flag - test)
         if (!bit) bit = getenv("SKYRECOMP_DOOR_NOWALL_MASK") ? (uint32_t)strtoul(getenv("SKYRECOMP_DOOR_NOWALL_MASK"), NULL, 16) : 1u;
