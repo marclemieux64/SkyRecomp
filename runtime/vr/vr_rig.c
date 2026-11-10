@@ -727,6 +727,7 @@ static bool link_piece_excluded(uint64_t count, uint64_t vb_size) {
            (count == 330 && vb_size == 12288);                     // (the Beetle on his wrist: vr_rig_beetle_draw)
 }
 #define LINK_PIECE_MIN_COUNT 24  // (smaller: quads, glints, effects - shared by much of the world; not learnt)
+#define LINK_JOINT_MAX_COUNT 48  // (on the same joint as a piece of his: only meshes this small - the bits by his head)
 
 static void link_piece_seen(uint64_t hash, uint64_t count, uint64_t size, const float off[3]) {
     if (!hash || count < LINK_PIECE_MIN_COUNT || known_link_mesh(hash, count, size) || not_link_mesh(hash, count, size)) return;
@@ -1751,20 +1752,34 @@ bool vr_rig_is_link_draw(const float *slot0, uint64_t size0, const float *bones,
                     forget_link_mesh(hash, count, vb_size, sqrtf(d2));  // (drawn far from him: someone else's)
                     return false;
                 }
-                memcpy(blocks[nb], m, sizeof blocks[nb]), block_frame[nb] = now, nb = (nb + 1) % 8;
-                return true;  // (a piece of his, wherever his body has it now)
-            }
-            for (int b = 0; b < 8; b++) {
-                if (!block_frame[b] || block_frame[b] + 1 < now) continue;
-                bool same = true;
-                for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - blocks[b][j]) <= 1e-4f * (1.0f + fabsf(m[j]));
-                if (same) {
-                    if (hash) remember_link_mesh(hash, count, vb_size);
+            // (only a real joint: a block that is just the game camera's view - a model at the world's origin, as many
+            // static props are drawn - is shared by everything drawn that way. A piece of his once seen with it had
+            // every such prop taken for his and hidden: a tester's dormitory lost its furniture, 153 meshes, 329k log
+            // lines, 2026-11-10)
+            bool plain = g_rig.have_game_view;
+            for (int j = 0; plain && j < 12; j++) plain = fabsf(m[j] - g_rig.game_view[j]) <= 1e-3f * (1.0f + fabsf(m[j]));
+            if (!plain) memcpy(blocks[nb], m, sizeof blocks[nb]), block_frame[nb] = now, nb = (nb + 1) % 8;
+            return true;  // (a piece of his, wherever his body has it now)
+        }
+        // (only the tiny bits it was for - next to his head, 6 and 12 indices - and not remembered: hidden this frame)
+        for (int b = 0; b < 8 && count <= LINK_JOINT_MAX_COUNT; b++) {
+            if (!block_frame[b] || block_frame[b] + 1 < now) continue;
+            bool same = true;
+            for (int j = 0; same && j < 12; j++) same = fabsf(m[j] - blocks[b][j]) <= 1e-4f * (1.0f + fabsf(m[j]));
+            if (same) {
+                static uint64_t said[32];
+                static int ns;
+                const uint64_t h = hash ^ count;
+                bool seen = false;
+                for (int i = 0; i < ns; i++) seen |= said[i] == h;
+                if (!seen && ns < 32) {
+                    said[ns++] = h;
                     fprintf(stderr, "[link-log] on a joint of his, his: %llu indices, vb %llu bytes\n",
                             (unsigned long long)count, (unsigned long long)vb_size);
-                    return true;
                 }
+                return true;
             }
+        }
         }
         const float dx = slot0[19] - e[0], dy = slot0[23] - e[1], dz = slot0[27] - e[2];
         float w[3];  // the offset in the world (view = R | t: R^T d)
