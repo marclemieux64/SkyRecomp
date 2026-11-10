@@ -14,7 +14,7 @@ extern "C" {
 #include "../settings.h"
 }
 
-#define LIVE_SAVE 0x7001CBB220ull
+#define LIVE_SAVE (MAIN_BASE + 0x1cbb220ull)
 #define HERO_FLAG (LIVE_SAVE + 0x55E0)  // PlayerStatus (save+0x54C0) + 0x120
 
 extern "C" int rt_hero_mode(void) { return *(volatile uint8_t *)(uintptr_t)HERO_FLAG == 1; }

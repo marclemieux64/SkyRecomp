@@ -28,6 +28,7 @@
 static bool heap_ptr(uint64_t p) { return p > MAIN_BASE + 0x2000000 && p < 0x7400000000ull && !(p & 3); }
 
 static bool player_eye_live(float eye[3]) {
+    if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     if (!heap_ptr(*(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF)) return false;  // (no Link: title, loading)
     const float *e = (const float *)(uintptr_t)PLAYER_EYE;
     for (int i = 0; i < 3; i++)
@@ -41,6 +42,7 @@ static bool player_eye_live(float eye[3]) {
 // this + 150; in water the eye point stays at the surface while this goes below it, deep when diving). Measured
 // 2026-10-25 in Skyloft's lake (SKYRECOMP_PLAYER_SNAP).
 static bool player_feet_y_live(float *y) {
+    if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     const uint64_t actor = *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF;
     if (!heap_ptr(actor)) return false;
     const float v = *(const float *)(uintptr_t)(actor + 0x154);
@@ -53,6 +55,7 @@ static bool player_feet_y_live(float *y) {
 // 0x15 starting and walking, 0x9 pushed against a wall, 0x6a at a door he can open (A opens it; with it the actor's
 // +0x14c and +0x314 change too, which a wall leaves alone).
 int player_action(void) {
+    if (!g_is_skyward_100) return -1;
     const uint64_t actor = *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF;
     if (!heap_ptr(actor)) return -1;
     return (int)*(const volatile uint32_t *)(uintptr_t)(actor + 0x118);
@@ -68,6 +71,7 @@ int player_action(void) {
 // it is at +0x7d98 instead and +0x7d38 is 0). Measured 2026-11-09 the same way, through steering, piloting and a recall.
 #define BEETLE_VTABLE (MAIN_BASE + 0x1570498)
 static bool player_beetle_flying_live(void) {
+    if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     const uint64_t actor = *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF;
     if (!heap_ptr(actor)) return false;
     const uint64_t b = *(const volatile uint64_t *)(uintptr_t)(actor + 0x7d38);
@@ -76,9 +80,10 @@ static bool player_beetle_flying_live(void) {
            *(const volatile uint32_t *)(uintptr_t)(actor + 0x8d4c) == 1;
 }
 
-#define GAME_CAMERA_VIEW 0x7002bfda90ull
+#define GAME_CAMERA_VIEW (MAIN_BASE + 0x2bfda90ull)
 
 static bool game_camera_view_live(float view[12]) {
+    if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     const float *v = (const float *)(uintptr_t)GAME_CAMERA_VIEW;
     float m[12];
     memcpy(m, v, sizeof m);

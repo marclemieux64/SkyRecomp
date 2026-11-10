@@ -16,8 +16,8 @@
 extern int player_action(void);
 extern bool player_eye(float eye[3]);
 
-#define HEAP_LO 0x7005000000ull
-#define HEAP_HI 0x7008000000ull
+#define HEAP_LO (MAIN_BASE + 0x5000000ull)
+#define HEAP_HI (MAIN_BASE + 0x8000000ull)
 #define DOOR_NEAR 160.0f  // (units, level: the door's origin from Link's eye point; measured ~60 at the door)
 
 static uint64_t g_door;  // the matrix's address; 0: none
@@ -35,12 +35,12 @@ void door_sound(bool open) { atomic_store(&g_sound_request, open ? 0x9d6 : 0x9d7
 void door_sound_locked(void) { atomic_store(&g_sound_request, 0x9d5); }  // (SE_Door_LOCKED)
 void door_sound_tick(Cpu *c) {
     const int id = atomic_exchange(&g_sound_request, 0);
-    if (!id || !g_door_snd || *(const uint64_t *)(uintptr_t)g_door_snd != 0x700168ede0ull) return;
+    if (!id || !g_door_snd || *(const uint64_t *)(uintptr_t)g_door_snd != (MAIN_BASE + 0x168ede0ull)) return;
     uint64_t saved[31];
     memcpy(saved, c->x, sizeof saved);
     const uint64_t sp = c->sp, pc = c->pc;
     c->x[0] = g_door_snd, c->x[1] = (uint64_t)id, c->x[2] = 1, c->x[3] = 0;
-    guest_call(c, 0x7000f4b8c0ull);
+    guest_call(c, (MAIN_BASE + 0xf4b8c0ull));
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp, c->pc = pc;
     LOG("[door] sound %#x\n", id);
@@ -96,7 +96,7 @@ static uint64_t scan(const float eye[3]) {
             // in a block of its own)
             bool in_door = false;
             for (uint64_t o = (a & ~7ull); o + 0x900 > a && o > HEAP_LO && !in_door; o -= 8)
-                in_door = *(const uint64_t *)(uintptr_t)o == 0x7001600da0ull;
+                in_door = *(const uint64_t *)(uintptr_t)o == (MAIN_BASE + 0x1600da0ull);
             if (in_door) continue;
         }
         const float d = dx * dx + dz * dz;
@@ -109,7 +109,7 @@ static uint64_t scan(const float eye[3]) {
 void door_test_open(void);
 // The level's door objects (vtable DOOR_VTABLE, position at +0x144): found a slice of the heap per frame (a whole
 // scan at once is a hitch in the headset), dropped once their vtable is gone (the room unloaded)
-#define DOOR_VTABLE_ 0x7001600da0ull
+#define DOOR_VTABLE_ (MAIN_BASE + 0x1600da0ull)
 #define DOOR_KEEP 500.0f  // (units: a door left open stays open until Link is this far from it)
 #define DOOR_REACH 150.0f  // (units, level: Link's eye from the door's origin - ~60 standing at it)
 static uint64_t g_doors[64];
@@ -244,7 +244,7 @@ static void *door_job(void *arg) {
                     *(const float *)&w[0], *(const float *)&w[1], *(const float *)&w[2], *(const float *)&w[3]);
             }
         if (getenv("SKYRECOMP_DOOR_REFS")) {  // (RE: the vtables' entries)
-            static const uint64_t vts[] = {0x7001600da0ull, 0x700166e508ull, 0x700164ce50ull, 0x700164d6a0ull, 0x7001649878ull};
+            static const uint64_t vts[] = {(MAIN_BASE + 0x1600da0ull), (MAIN_BASE + 0x166e508ull), (MAIN_BASE + 0x164ce50ull), (MAIN_BASE + 0x164d6a0ull), (MAIN_BASE + 0x1649878ull)};
             for (int v = 0; v < 5; v++) {
                 char line[1600];
                 int n = snprintf(line, sizeof line, "[door] vtable %#llx:", (unsigned long long)vts[v]);
@@ -265,7 +265,7 @@ static void *door_job(void *arg) {
                         uint64_t vt = 0, at = 0;
                         for (uint64_t o = a & ~7ull; o + 0x400 > a && !vt; o -= 8) {
                             const uint64_t v = *(const uint64_t *)(uintptr_t)o;
-                            if (v >= 0x7001400000ull && v < 0x7001800000ull) vt = v, at = o;
+                            if (v >= (MAIN_BASE + 0x1400000ull) && v < (MAIN_BASE + 0x1800000ull)) vt = v, at = o;
                         }
                         LOG("[door] ref to %#llx at %#llx (object %#llx +%#llx, vtable %#llx)\n",
                             (unsigned long long)g_door_actor_found, (unsigned long long)a, (unsigned long long)at,
@@ -273,7 +273,7 @@ static void *door_job(void *arg) {
                     }
         g_door_snd = 0;  // (its sound source: vtable 0x700168ede0, 0x720 before the leaf's matrix in its block)
         for (uint64_t o = g_door_job & ~7ull; o + 0x2000 > g_door_job && !g_door_snd; o -= 8)
-            if (*(const uint64_t *)(uintptr_t)o == 0x700168ede0ull) g_door_snd = o;
+            if (*(const uint64_t *)(uintptr_t)o == (MAIN_BASE + 0x168ede0ull)) g_door_snd = o;
         if (g_door_actor_found) {
             // (the door object faces the other way from the drawn leaf: its yaw, s16 at +0x132, minus 180 degrees,
             // is the leaf's - a copy turned the other way is turned back)
@@ -448,8 +448,8 @@ bool door_handle_hand(float w[3]) { return handle_at(HANDLE_HAND_Z, w); }
 // +0x7bc / +0x7bd (bytes; 1 and 0 there). The door event activates the far room with f_7000e0854c(rooms, to, from):
 // rooms = *(0x7002bf9d90), its room objects at +0xf0 + 8 * index; it clears the room's inactive bits (+0x9f0, 0xa
 // when inactive) and marks the rooms around it - the far room's objects are then built, as when the door opens.
-#define DOOR_VTABLE 0x7001600da0ull
-#define ROOMS_PTR 0x7002bf9d90ull
+#define DOOR_VTABLE (MAIN_BASE + 0x1600da0ull)
+#define ROOMS_PTR (MAIN_BASE + 0x2bf9d90ull)
 #define g_door_actor g_door_actor_found
 static _Atomic int g_room_request;
 
@@ -475,9 +475,9 @@ uint64_t door_find_actor(const float m[12]) {
 
 static uint64_t room_object(int index) {
     const uint64_t rooms = *(const uint64_t *)(uintptr_t)ROOMS_PTR;
-    if (rooms < 0x7000000000ull || rooms >= 0x7800000000ull || index < 0 || index > 63) return 0;
+    if (rooms < (MAIN_BASE + 0x0ull) || rooms >= 0x7800000000ull || index < 0 || index > 63) return 0;
     const uint64_t r = *(const uint64_t *)(uintptr_t)(rooms + 0xf0 + 8 * (uint64_t)index);
-    return r >= 0x7000000000ull && r < 0x7800000000ull ? r : 0;
+    return r >= (MAIN_BASE + 0x0ull) && r < 0x7800000000ull ? r : 0;
 }
 
 // The door's far room (the one of its two that is inactive) and the near one. False: no door object, or both active.
@@ -506,7 +506,7 @@ static _Atomic int g_unload_request;
 static float link_side(void) {
     float m[12];
     const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-    if (link < 0x7000000000ull || link >= 0x7800000000ull || !door_matrix(m)) return 0;
+    if (link < (MAIN_BASE + 0x0ull) || link >= 0x7800000000ull || !door_matrix(m)) return 0;
     const float *p = (const float *)(uintptr_t)(link + 0x148);
     const float lz = m[2] * (p[0] - m[3]) + m[6] * (p[1] - m[7]) + m[10] * (p[2] - m[11]);
     return lz < 0 ? -1.0f : 1.0f;
@@ -521,7 +521,7 @@ static void activate_room(Cpu *c, int to, int from) {
     const uint64_t sp = c->sp, pc = c->pc;
     c->x[0] = *(const uint64_t *)(uintptr_t)ROOMS_PTR, c->x[1] = (uint64_t)to, c->x[2] = (uint64_t)from;
     const uint64_t ta = plat_now_ns();
-    guest_call(c, 0x7000e0854cull);
+    guest_call(c, (MAIN_BASE + 0xe0854cull));
     LOG("[door] timing: room activation %.1f ms\n", (plat_now_ns() - ta) / 1e6);
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp, c->pc = pc;
@@ -566,7 +566,7 @@ void door_room_tick(Cpu *c) {
     const uint64_t sp = c->sp, pc = c->pc;
     c->x[0] = rooms, c->x[1] = (uint64_t)to, c->x[2] = (uint64_t)from;
     const uint64_t ta = plat_now_ns();
-    guest_call(c, 0x7000e0854cull);
+    guest_call(c, (MAIN_BASE + 0xe0854cull));
     LOG("[door] timing: room activation %.1f ms\n", (plat_now_ns() - ta) / 1e6);
     memcpy(c->x, saved, sizeof saved);
     c->sp = sp, c->pc = pc;
@@ -785,7 +785,7 @@ void door_step_tick(void) {
             on = e && sscanf(e, "%lx,%f", &off, &val) == 2;
         }
         const uint64_t lk = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-        if (on && lk >= 0x7000000000ull && lk < 0x7800000000ull) *(volatile float *)(uintptr_t)(lk + (int64_t)off) = val;
+        if (on && lk >= (MAIN_BASE + 0x0ull) && lk < 0x7800000000ull) *(volatile float *)(uintptr_t)(lk + (int64_t)off) = val;
     }
     {   // (RE test) SKYRECOMP_DOOR_TEST_LIFTM=<offset hex>: the door object's 3x4 matrix at that offset lifted 500 every
         // frame - does its collision follow it?
@@ -813,7 +813,7 @@ void door_step_tick(void) {
     static int close_in;  // (frames until the door shuts behind him; 0: none)
     float m[12];
     const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-    if (link < 0x7000000000ull || link >= 0x7800000000ull || !door_matrix(m)) { inside = false, door_tris_set(false); return; }
+    if (link < (MAIN_BASE + 0x0ull) || link >= 0x7800000000ull || !door_matrix(m)) { inside = false, door_tris_set(false); return; }
     if (close_in && !--close_in) door_close();
     if (atomic_load(&g_closing)) {  // (swinging shut, easing in, then latched)
         const float o = atomic_load(&g_open), step = 0.01f + 0.03f * fabsf(o);  // (radians a frame)
@@ -942,7 +942,7 @@ void door_link_tick(void) {
     if (on < 0) on = getenv("SKYRECOMP_DOOR_TEST_LINK") && sscanf(getenv("SKYRECOMP_DOOR_TEST_LINK"), "%x,%x", &off, &val) == 2;
     if (!on || !g_room_activated) return;
     const uint64_t link = *(const uint64_t *)(uintptr_t)(MAIN_BASE + 0x18299d0);
-    if (link >= 0x7000000000ull && link < 0x7800000000ull) *(volatile uint32_t *)(uintptr_t)(link + off) = val;
+    if (link >= (MAIN_BASE + 0x0ull) && link < 0x7800000000ull) *(volatile uint32_t *)(uintptr_t)(link + off) = val;
 }
 
 void door_mark_activated(void) { g_room_activated = true; }

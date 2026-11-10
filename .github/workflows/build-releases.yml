@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing release tag to build and upload
         required: true
-        default: v1.0.6
+        default: v2.2.0
         type: string
       windows_only:
         description: Only the Windows package, built from this run's commit (a tag made before the Windows job existed)
