@@ -709,6 +709,11 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         {
             compiler(&a, &t);
             add_split(&a, GAMELIB_SHARED);
+#ifdef _WIN32
+            // (MSYS2's clang: its default linker is GNU ld, which can't link the LTO objects - "LLVMgold.dll: error
+            // loading plugin". lld can; zig takes the lld-link path above.)
+            if (!t.zig) add(&a, "-fuse-ld=lld");
+#endif
             add(&a, "-o");
             add(&a, tmp);
             add(&a, at);
