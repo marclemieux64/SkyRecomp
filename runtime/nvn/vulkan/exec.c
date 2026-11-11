@@ -4770,6 +4770,10 @@ static void draw_(CmdRec *r, bool indexed) {
             vr_rig_set_hand_draw(hand);
             // (the sword or shield he holds: with that hand - vr_rig.c)
             const bool held = hand < 0 && vr_rig_held_draw((const float *)(uintptr_t)cam.addr, cam.size, r->x[2]);
+            {   // (sheathed on his back: not drawn in 1st person - vr_rig.c)
+                extern bool vr_rig_held_hidden(void);
+                if (hand < 0 && !held && vr_rig_held_hidden()) { stat_skipped++; return; }
+            }
             if (!vk_vr_eye()) {  // (RE: draws by the Beetle on his wrist - the launcher bracelet; vr_rig.c)
                 extern void vr_rig_beetle_near_note(const float *slot0, uint64_t size0, const float *bones, uint64_t bone_bytes,
                                                     uint64_t count, uint64_t vb_size, int hand, bool held);

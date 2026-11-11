@@ -913,8 +913,27 @@ void vr_rig_set_grips(bool left_ok, const float left[7], bool right_ok, const fl
 enum { HELD_KINDS = 2, HELD_MODELS = 12 };
 #define HELD_LEARN_FRAMES 20
 #define HELD_LEARN_MIN_COUNT 150
-static uint64_t g_held_counts[HELD_KINDS][HELD_MODELS] = {{1056}, {2352}};
+static uint64_t g_held_counts[HELD_KINDS][HELD_MODELS] = {{1056, 630}, {2352}};  // (630: the Practice Sword, learned 2026-11-11)
+// (learned models are kept across runs - vr_held_models.txt beside the game, "<kind> <index count>" a line: a sword
+// not yet drawn this run is known on his back too)
+#define HELD_MODELS_FILE "vr_held_models.txt"
+static void held_models_load(void) {
+    FILE *f = fopen(HELD_MODELS_FILE, "r");
+    if (!f) return;
+    int k;
+    unsigned long long count;
+    while (fscanf(f, "%d %llu", &k, &count) == 2) {
+        if (k < 0 || k >= HELD_KINDS || count < HELD_LEARN_MIN_COUNT) continue;
+        for (int i = 0; i < HELD_MODELS; i++) {
+            if (g_held_counts[k][i] == count) break;
+            if (!g_held_counts[k][i]) { g_held_counts[k][i] = count; break; }
+        }
+    }
+    fclose(f);
+}
 static int held_kind(uint64_t count) {
+    static bool loaded;
+    if (!loaded) loaded = true, held_models_load();
     if (!count) return -1;
     for (int k = 0; k < HELD_KINDS; k++)
         for (int i = 0; i < HELD_MODELS; i++)
@@ -1442,6 +1461,10 @@ static void held_learn(const float *m, uint64_t count, uint64_t now) {
         for (int i = 0; i < HELD_MODELS; i++)
             if (!g_held_counts[k][i]) {
                 g_held_counts[k][i] = count;
+                {
+                    FILE *f = fopen(HELD_MODELS_FILE, "a");
+                    if (f) fprintf(f, "%d %llu\n", k, (unsigned long long)count), fclose(f);
+                }
                 fprintf(stderr, "[vr] first person: a new %s model learned (index count %llu): it goes with his %s hand\n", k ? "shield" : "sword",
                         (unsigned long long)count, s ? "right" : "left");
                 break;
@@ -1453,7 +1476,8 @@ static void held_learn(const float *m, uint64_t count, uint64_t now) {
 
 // (exec.c, a rigid draw that isn't a hand) The sword or shield in one of his hands: drawn with that hand, on its
 // controller (vr_rig_set_hand_draw's state, the item's own offset kept). False: not held - the game's placement.
-bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
+static uint64_t part_count[HELD_KINDS][4];  // (index counts of the parts seen on each item's own joint)
+static bool held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     static int off = -1;
     if (off < 0) off = getenv("SKYRECOMP_VR_NO_HELD") != NULL;
     if (off || !slot0 || !hands_on() || !sky_vr_is_scene_projection(slot0, size0)) return false;
@@ -1463,7 +1487,6 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     // Another part drawn on the held item's own joint (its exact block: the blade) goes with it. Such a part is known
     // by its index count once seen after the item in a frame: drawn before it, the item's block of this frame isn't
     // known yet - in the left eye; the right eye's replay comes after, so only that eye moved it.
-    static uint64_t part_count[HELD_KINDS][4];
     int k = -1;
     bool part = false;  // (a known part, not the item itself)
     k = held_kind(count);
@@ -1630,6 +1653,43 @@ bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
     static int said;
     if (!said++) fprintf(stderr, "[vr] first person: Link's %s is on the %s controller\n", k ? "shield" : "sword", side ? "right" : "left");
     return true;
+}
+
+// The sword sheathed and the shield put away sit on his back, a hand's width behind the eye point: in 1st person,
+// with his body hidden, the hilt stuck into view over the shoulder now and then. Not held and that close to the eye
+// point (the sheathed hilt ~20 units; drawn, in the game's own pose, 47+), the item and the parts on its joint are
+// not drawn (g_held_hide: exec.c skips the draw; the shadow pass has another projection and keeps them).
+// SKYRECOMP_VR_SHOW_BACK=1: drawn as before.
+#define HELD_HIDE 42.0f
+static bool g_held_hide;
+static uint64_t g_held_back[HELD_KINDS];  // (the frame each item was last seen on his back)
+bool vr_rig_held_hidden(void) { return g_held_hide; }
+bool vr_rig_held_draw(const float *slot0, uint64_t size0, uint64_t count) {
+    g_held_hide = false;
+    if (held_draw(slot0, size0, count)) return true;
+    static int show = -1;
+    if (show < 0) show = getenv("SKYRECOMP_VR_SHOW_BACK") != NULL;
+    if (show || g_rig.mode != 1 || !slot0 || !hands_on() || !g_rig.have_game_view || !sky_vr_is_scene_projection(slot0, size0)) return false;
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    const float *m = slot0 + 16, *v = g_rig.game_view;
+    float e[3];
+    for (int r = 0; r < 3; r++) e[r] = v[r * 4] * g_rig.link[0] + v[r * 4 + 1] * g_rig.link[1] + v[r * 4 + 2] * g_rig.link[2] + v[r * 4 + 3];
+    const float ex = m[3] - e[0], ey = m[7] - e[1], ez = m[11] - e[2];
+    if (ex * ex + ey * ey + ez * ez > HELD_HIDE * HELD_HIDE) return false;
+    int k = held_kind(count);
+    if (k >= 0) g_held_back[k] = now;  // (the item itself, at his back)
+    else {
+        // (a part: its count known on an item's joint, and that item at his back this frame or the last)
+        for (int i = 0; i < HELD_KINDS && k < 0; i++)
+            for (int p = 0; p < 4 && k < 0; p++)
+                if (part_count[i][p] && part_count[i][p] == count && g_held_back[i] && g_held_back[i] + 1 >= now) k = i;
+        if (k < 0) return false;
+    }
+    g_held_hide = true;
+    static int said;
+    if (!said++) fprintf(stderr, "[vr] first person: the %s on his back is not drawn\n", k ? "shield" : "sword");
+    return false;
 }
 
 // K: the hand mesh in its controller's grip (as on the vr-port branch, measured from the game's rest pose). Both hand
