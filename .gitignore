@@ -47,6 +47,7 @@ cache/
 /android/app/src/personal/
 /tools/quest/gui/bin/
 /tools/quest/gui/obj/
+/toolchain/
 save/
 scratch/
 

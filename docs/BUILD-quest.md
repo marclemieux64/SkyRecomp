@@ -55,7 +55,13 @@ the OpenXR frame loop.
 Windows players download the portable Quest Packager ZIP, extract the complete
 folder, and double-click `SkyRecomp-Quest-Packager.exe`. The native Windows GUI
 provides folder pickers, build progress, optional installation, and an
-output-folder shortcut. The PowerShell script remains the internal build
+output-folder shortcut. Its **Install required tools** button downloads a
+private Microsoft OpenJDK 21 and the official Android command-line tools, then
+installs the pinned Platform, Build Tools, NDK, CMake, and ADB packages. The
+player does not need to configure a system-wide Java or Android installation.
+The adjacent **Remove installed tools** button deletes only that private
+`toolchain/` directory; it does not touch extracted game data or built APKs.
+The PowerShell script remains the internal build
 backend so the same operation can be automated and diagnosed from its log.
 
 Maintainers can create the portable package with

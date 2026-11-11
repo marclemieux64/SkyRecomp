@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace SkyRecompQuestPackager;
@@ -53,6 +54,8 @@ internal sealed class PackagerForm : Form
     private readonly TextBox sdk = new();
     private readonly TextBox java = new();
     private readonly CheckBox install = new();
+    private readonly Button installTools = new();
+    private readonly Button removeTools = new();
     private readonly Button build = new();
     private readonly Button output = new();
     private readonly Label status = new();
@@ -77,25 +80,36 @@ internal sealed class PackagerForm : Form
         sdk.Text = Environment.GetEnvironmentVariable("ANDROID_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk");
         java.Text = Environment.GetEnvironmentVariable("JAVA_HOME") ?? "";
+        LoadPrivateToolchain();
 
-        install.Text = "Install to a connected Quest and copy extracted data after building";
+        installTools.Text = "Install required tools";
+        installTools.SetBounds(150, 216, 160, 30);
+        installTools.Click += InstallToolsClicked;
+        Controls.Add(installTools);
+
+        removeTools.Text = "Remove installed tools";
+        removeTools.SetBounds(315, 216, 165, 30);
+        removeTools.Click += RemoveToolsClicked;
+        Controls.Add(removeTools);
+
+        install.Text = "Install to connected Quest after build";
         install.AutoSize = true;
-        install.Location = new Point(150, 217);
+        install.Location = new Point(490, 222);
         Controls.Add(install);
 
         build.Text = "Build personal APK";
-        build.SetBounds(150, 252, 170, 36);
+        build.SetBounds(150, 258, 170, 36);
         build.Click += BuildClicked;
         Controls.Add(build);
 
         output.Text = "Open output folder";
-        output.SetBounds(330, 252, 150, 36);
+        output.SetBounds(330, 258, 150, 36);
         output.Click += (_, _) => OpenOutput();
         Controls.Add(output);
 
         status.Text = "Ready";
         status.AutoSize = true;
-        status.Location = new Point(500, 262);
+        status.Location = new Point(500, 268);
         Controls.Add(status);
 
         log.Multiline = true;
@@ -103,7 +117,7 @@ internal sealed class PackagerForm : Form
         log.ScrollBars = ScrollBars.Both;
         log.WordWrap = false;
         log.Font = new Font("Consolas", 8.5f);
-        log.SetBounds(22, 305, 768, 260);
+        log.SetBounds(22, 311, 768, 254);
         log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(log);
         FormClosing += (_, e) => { if (process is { HasExited: false }) e.Cancel = true; };
@@ -111,7 +125,51 @@ internal sealed class PackagerForm : Form
 
     internal bool RunSelfTest() =>
         Text == "SkyRecomp Quest Packager" && build.Enabled && Controls.Contains(game) &&
-        File.Exists(Path.Combine(root, "tools", "quest", "build-personal-apk.ps1"));
+        File.Exists(Path.Combine(root, "tools", "quest", "build-personal-apk.ps1")) &&
+        File.Exists(Path.Combine(root, "tools", "quest", "install-toolchain.ps1")) &&
+        File.Exists(Path.Combine(root, "tools", "quest", "remove-toolchain.ps1"));
+
+    private async void InstallToolsClicked(object? sender, EventArgs e)
+    {
+        var answer = MessageBox.Show(this,
+            "This downloads Microsoft OpenJDK 21 and the official Android SDK tools. " +
+            "Continuing also accepts the Android SDK license required by sdkmanager. Continue?",
+            "Install required tools", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+        if (answer != DialogResult.Yes) return;
+
+        var script = Path.Combine(root, "tools", "quest", "install-toolchain.ps1");
+        var info = PowerShellInfo(script, new[] { "-Destination", Path.Combine(root, "toolchain") });
+        log.Clear();
+        build.Enabled = installTools.Enabled = removeTools.Enabled = false;
+        status.Text = "Installing tools...";
+        var exit = await RunProcess(info);
+        LoadPrivateToolchain();
+        status.Text = exit == 0 ? "Tools installed" : $"Tool installation failed (exit {exit})";
+        build.Enabled = installTools.Enabled = removeTools.Enabled = true;
+    }
+
+    private async void RemoveToolsClicked(object? sender, EventArgs e)
+    {
+        var privateRoot = Path.GetFullPath(Path.Combine(root, "toolchain"));
+        var answer = MessageBox.Show(this,
+            $"Remove the packager's private Java and Android tools?\n\n{privateRoot}\n\n" +
+            "Game files and generated APKs will not be removed.",
+            "Remove installed tools", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (answer != DialogResult.Yes) return;
+
+        log.Clear();
+        build.Enabled = installTools.Enabled = removeTools.Enabled = false;
+        status.Text = "Removing tools...";
+        var script = Path.Combine(root, "tools", "quest", "remove-toolchain.ps1");
+        var exit = await RunProcess(PowerShellInfo(script, Array.Empty<string>()));
+        if (exit == 0)
+        {
+            if (sdk.Text.StartsWith(privateRoot, StringComparison.OrdinalIgnoreCase)) sdk.Clear();
+            if (java.Text.StartsWith(privateRoot, StringComparison.OrdinalIgnoreCase)) java.Clear();
+        }
+        status.Text = exit == 0 ? "Private tools removed" : $"Tool removal failed (exit {exit})";
+        build.Enabled = installTools.Enabled = removeTools.Enabled = true;
+    }
 
     private void AddLabel(string text, int left, int top, float size = 9, bool semibold = false)
     {
@@ -150,32 +208,17 @@ internal sealed class PackagerForm : Form
         }
 
         var backend = Path.Combine(root, "tools", "quest", "build-personal-apk.ps1");
-        var info = new ProcessStartInfo("powershell.exe")
-        {
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        foreach (var arg in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", backend,
-                     "-GameRoot", game.Text, "-AndroidSdk", sdk.Text, "-JavaHome", java.Text })
-            info.ArgumentList.Add(arg);
-        if (install.Checked) info.ArgumentList.Add("-Install");
+        var args = new List<string> { "-GameRoot", game.Text, "-AndroidSdk", sdk.Text, "-JavaHome", java.Text };
+        if (install.Checked) args.Add("-Install");
+        var info = PowerShellInfo(backend, args);
 
         log.Clear();
         build.Enabled = false;
         status.Text = "Building...";
-        process = new Process { StartInfo = info, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, a) => Append(a.Data);
-        process.ErrorDataReceived += (_, a) => Append(a.Data);
         try
         {
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
-            status.Text = process.ExitCode == 0 ? "Build completed" : $"Build failed (exit {process.ExitCode})";
+            var exit = await RunProcess(info);
+            status.Text = exit == 0 ? "Build completed" : $"Build failed (exit {exit})";
         }
         catch (Exception ex)
         {
@@ -183,6 +226,40 @@ internal sealed class PackagerForm : Form
             status.Text = "Build failed";
         }
         finally { build.Enabled = true; }
+    }
+
+    private ProcessStartInfo PowerShellInfo(string script, IEnumerable<string> arguments)
+    {
+        var info = new ProcessStartInfo("powershell.exe")
+        {
+            WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var arg in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script })
+            info.ArgumentList.Add(arg);
+        foreach (var arg in arguments) info.ArgumentList.Add(arg);
+        return info;
+    }
+
+    private async Task<int> RunProcess(ProcessStartInfo info)
+    {
+        process = new Process { StartInfo = info, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, a) => Append(a.Data);
+        process.ErrorDataReceived += (_, a) => Append(a.Data);
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await process.WaitForExitAsync();
+        return process.ExitCode;
+    }
+
+    private void LoadPrivateToolchain()
+    {
+        var config = Path.Combine(root, "toolchain", "toolchain.json");
+        if (!File.Exists(config)) return;
+        using var document = JsonDocument.Parse(File.ReadAllText(config));
+        sdk.Text = document.RootElement.GetProperty("androidSdk").GetString() ?? sdk.Text;
+        java.Text = document.RootElement.GetProperty("javaHome").GetString() ?? java.Text;
     }
 
     private void Append(string? line)
