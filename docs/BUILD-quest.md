@@ -52,10 +52,16 @@ This packaging path is not playable yet: the Android runtime still needs to
 load `libskygame.so`, mount the copied data, and connect the game renderer to
 the OpenXR frame loop.
 
-Windows players can double-click `tools/quest/SkyRecomp Quest Packager.cmd` for
-a graphical wrapper with folder pickers, build progress, optional installation,
-and an output-folder shortcut. The PowerShell script remains the build backend
-so the same operation can be automated and diagnosed from its log.
+Windows players download the portable Quest Packager ZIP, extract the complete
+folder, and double-click `SkyRecomp-Quest-Packager.exe`. The native Windows GUI
+provides folder pickers, build progress, optional installation, and an
+output-folder shortcut. The PowerShell script remains the internal build
+backend so the same operation can be automated and diagnosed from its log.
+
+Maintainers can create the portable package with
+`tools/quest/build-packager.ps1`. Tags matching `quest-packager-v*` compile and
+self-test the real Windows executable before attaching the ZIP to a GitHub
+pre-release.
 
 The finished APK is placed in
 `android/app/build/outputs/apk/personal/release/`. It contains generated code
