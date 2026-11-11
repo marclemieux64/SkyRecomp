@@ -911,11 +911,19 @@ static void tab_vr_options(void) {
                           "you to open it. Gesture only ignores the A button at doors; Button only turns the gesture off.");
     changed |= opt_toggle("Sword Hits Follow Your Hand", &g_vr_config.sword_hitbox, true,
                           "1st person: while the sword is drawn, what it hits is where the blade in your right hand is, "
-                          "not where the game swings it. The game still decides when you swing.");
+                          "not where the game swings it.");
     changed |= opt_toggle("Slashes From the Blade's Path", &g_vr_config.sword_swing_hits, true,
                           "1st person, the sword drawn: the game reads your slashes from how the blade moves through "
                           "space - an arm swing counts as much as a flick of the wrist - not from the controller's "
                           "rotation alone.");
+    changed |= opt_toggle("Swings Hit on Their Own", &g_vr_config.sword_free_swings, true,
+                          "1st person, the sword drawn: any fast swing of the blade hits, in the direction you swung "
+                          "it - without waiting for the game to recognise a slash or finish the last one. Enemies that "
+                          "guard see the direction of your real swing.");
+    if (g_vr_config.sword_free_swings)
+        changed |= opt_slider("Swing Speed to Hit", &g_vr_config.sword_swing_speed, 1.0f, 10.0f, 0.5f, 3.0f, "%.1f m/s",
+                              "How fast the sword's tip must move (your hand's own motion, not walking or turning) "
+                              "before a swing hits. Raise it if moving the sword around hits things by accident.");
     static const char *turn_modes[] = {"Snap", "Smooth", "Off"};
     changed |= opt_choice("Turning", &g_vr_config.turn_mode, turn_modes, 3, 0,
                           "1st person: the right stick turns you. Snap turns in steps (comfortable for most people), "

@@ -283,7 +283,7 @@ test) leave it whole through three slashes.
 Link's update (main+0xab7cf4) is called through his vtable, so it is wrapped with `hle_override`; after it runs, the
 line and the three capsules are replaced by the blade held by the right controller - along the grip's -z
 (`vr_rig_controller_pose`: the grip in the game world from the eyes' own anchor, updated by every eye camera drawn
-with the real game camera), the game's own reach along it - this update's and the last one's. The game still decides
+with the real game camera), the game's own reach along it - this update's and the last one's. In its own slashes the game decides
 when Link swings (its motion controls); where the blade is when it does, and what it hits, is the player's hand,
 Z-targeting or not. **Slashes From the Blade's Path** (`sword_swing_hits`) also makes the right Joy-Con's turn the game
 reads the blade's motion in space rather than the wrist's (JoyConTranslator).
@@ -296,6 +296,34 @@ also serves the title screen's Link. `SKYRECOMP_SWORD_LOG=1` logs the line writt
 The line, the update and the hit test were found with a memory search for positions that keep their place in the
 drawn hilt's frame while the sword swings, and by watching which functions write them; the effect was confirmed in
 play (grass and the training logs cut where the controller's blade passes).
+
+#### Swings of their own, their direction, the trail
+
+VR Options > Swings Hit on Their Own (`sword_free_swings`, on) and Swing Speed to Hit (`sword_swing_speed`, 3 m/s).
+The colliders only hit while Link's update hands them to the collision manager (cCcS, the pointer at
+main+0x2c24548) for the frame - Set (main+0xfd5f7c: into its attack list, count u16 at +0x5a08, pointers from +0x8, if
+bit 0 of the collider's first word is set) and its priority list (main+0xfd3ddc on manager +0x6068) - which it does
+only in its own slash; the collider objects start 0x40 before +0x12c8 (their vtables). Setting the bit without Set
+changed nothing; armed by hand and Set, a collider outside a slash is processed (its bounds follow it). So when the blade
+tip moves faster than the setting - from the controller's own velocity in the room, v + w x r with r the blade, 0.8 m
+along the aim pose's -z (`vr_input_blade_speed`), so walking and turning don't count - and the game isn't slashing (its
+colliders aren't in the attack list after its update), the hook starts a swing the game's way (main+0xa6d158: Link,
+0, the direction; s0 60, s1 45 - the direction, damage and radius 20 -> 45, each target's hit reset) and registers the
+three colliders every update until the tip has stayed below 60% of the setting for 3 updates. Only once play has
+settled: Link's own eye point, the 1st-person view placed, the game not paused, the sword in hand 60 updates (allowed
+from the start, one fired while he was still spawning: the hands were learned the wrong way round, the HUD yellow).
+
+The direction is one of the game's eight: a bit in each collider's +0x0c and Link +0x41e (u16; 0x1 down, then
+counter-clockwise - 0x2 down-right, 0x4 right, 0x8 up-right, 0x10 up, 0x20 up-left, 0x40 left, 0x80 down-left) with an
+angle in +0x0e (0 up, 0x4000 left, 0x8000 down, 0xc000 right). It is read from the tip's path over 3 updates across the
+eyes' view (relative to Link's eye point, so walking doesn't skew it), and written in the game's own slashes too. Found
+from a slash's collider dumped update by update, its start (the callers of main+0xa6d158) and the vector it sweeps.
+
+The white trail is drawn from the sword line's structure - a history of points further in (+0x90, +0x144..+0x168,
++0x228) - while its u32 at +0x3bc is set (1 in a slash); it is cleared after each update (`SKYRECOMP_VR_SWORD_TRAIL=1`
+keeps it). Screenshots mid-slash: moving the line changed nothing, collapsing the history thinned the trail to a
+streak, clearing +0x3bc left none. While the sword is in your hand the view doesn't follow Link's animated head
+(`vr_sword_out`): his slashes lean it.
 
 ### The Beetle (`runtime/hle/vr_beetle.c`, `vr_rig.c`, `runtime/hle/player.c`)
 

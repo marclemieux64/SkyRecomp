@@ -116,6 +116,15 @@ static XrSpace aim_space[2], grip_space[2];
 static _Atomic int g_pointer_hand = -1;   // (menu_input) the hand the menu pointer follows, -1 none
 static _Atomic bool g_pointer_held;       // the trigger is being pulled: the pointer stays where it was
 static _Atomic uint64_t g_last_space;     // (vr_input_sync) the space hands are located in
+static _Atomic float g_blade_tip_speed;   // (vr_input_sync) the right hand's sword tip, m/s in the room
+static _Atomic uint64_t g_blade_tip_at;   // ... when (SDL ns)
+// (hle/vr_sword.c, game thread) the sword tip's speed from the controller's own motion; false if not measured lately
+bool vr_input_blade_speed(float *mps) {
+    const uint64_t at = atomic_load(&g_blade_tip_at);
+    if (!at || SDL_GetTicksNS() - at > 100000000ull) return false;
+    *mps = atomic_load(&g_blade_tip_speed);
+    return true;
+}
 static void locate_hand(XrSpace hand, XrSpace space, XrTime time, SkyVrHand *out);
 
 static bool ok(XrResult r, const char *what) {
@@ -385,6 +394,17 @@ void vr_input_sync(XrSpace space, XrTime time, const float reference[7]) {
         { extern float g_door_stick; g_door_stick = sqrtf(ls.x * ls.x + ls.y * ls.y); }  // (hle/door.c trace)
         s.stick[1][0] = rs.x; s.stick[1][1] = rs.y;
         for (int h = 0; h < 2; h++) locate_hand(aim_space[h], space, time, &s.hand[h]);
+        // the sword's tip in the right hand, its speed in the room (m/s) - the hand's own motion, not walking or
+        // turning (hle/vr_sword.c): v + w x r, r the blade (0.8 m along the controller's -z)
+        const SkyVrHand *r = &s.hand[1];
+        if (r->tracked && r->velocity_valid) {
+            const float *q = r->orientation, x = q[0], y = q[1], z = q[2], w = q[3];
+            const float b[3] = {-0.8f * 2 * (x * z + w * y), -0.8f * 2 * (y * z - w * x), -0.8f * (1 - 2 * (x * x + y * y))};
+            const float *v = r->linear_velocity, *a = r->angular_velocity;
+            const float t[3] = {v[0] + a[1] * b[2] - a[2] * b[1], v[1] + a[2] * b[0] - a[0] * b[2], v[2] + a[0] * b[1] - a[1] * b[0]};
+            atomic_store(&g_blade_tip_speed, sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]));
+            atomic_store(&g_blade_tip_at, SDL_GetTicksNS());
+        }
     }
     {   // (the right controller's pointing ray for aiming items: runtime/vr/vr_rig.c, runtime/hle/vr_aim.c)
         extern void vr_rig_set_aim(bool ok, const float pose[7]);
@@ -394,6 +414,14 @@ void vr_input_sync(XrSpace space, XrTime time, const float reference[7]) {
         vr_rig_set_aim(s.active && r->tracked, pose);
     }
     menu_input(&s);
+    if (s.active) {  // The right stick's up / down is the d-pad's (pushed past 0.6, let go below 0.4); not the game's.
+        static int held;  // (1 up, -1 down)
+        const float x = s.stick[1][0], y = s.stick[1][1];
+        if (!held && fabsf(y) > 0.6f && fabsf(y) > fabsf(x)) held = y > 0 ? 1 : -1;
+        else if (held && held * y < 0.4f) held = 0;
+        if (held) s.buttons |= held > 0 ? SKY_JC_UP : SKY_JC_DOWN;
+        s.stick[1][1] = 0;
+    }
     {   // The game walks Link relative to its own camera; in the headset the player looks around with the head.
         // During gameplay the left stick is turned by how far the eyes look from the game camera: forward walks
         // (and turns Link) where the player looks. Not in menus or cutscenes (the stick picks there).

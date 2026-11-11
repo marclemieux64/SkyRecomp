@@ -88,6 +88,16 @@ typedef struct VRConfig {
         = true
 #endif
         ;                                // ... and they're on whenever the blade moves fast, not only in the game's slashes
+    bool sword_free_swings
+#ifdef __cplusplus
+        = true
+#endif
+        ;                                // 1st person: a fast swing hits by itself, in the direction swung (hle/vr_sword.c)
+    float sword_swing_speed
+#ifdef __cplusplus
+        = 3.0f
+#endif
+        ;                                // ... once the blade tip moves faster than this (m/s)
 } VRConfig;
 
 // Always contains a validated configuration. LoadVRConfig resets it to defaults first.
