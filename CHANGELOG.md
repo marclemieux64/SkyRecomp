@@ -5,8 +5,12 @@
 Experimental SteamVR / OpenXR support (off by default; VR Options > Enable VR Mode), from @marclemieux64 and @AL56201. See [docs/vr.md](docs/vr.md).
 
 ### 1st person
-- **Hands and held items:** Link's hands, sword and shield stay on their controllers through swings, shield raises and bashes; the hands are on the correct sides, and the blade shows in both eyes.
+- **Hands and held items:** Link's hands, sword and shield stay on their controllers through swings, shield raises and bashes; the hands are on the correct sides (and correct themselves if a new hand pose was taken for the wrong one), and the blade shows in both eyes.
 - **Sword hits from your blade:** a slash hits with the game's three sword attack colliders, now placed along the blade in your right hand, so what gets cut is where you swing (Z-targeting no longer steers it).
+- **Swings hit on their own:** a fast swing of the blade (its tip faster than VR Options > Swing Speed to Hit, 3 m/s by default, measured from your hand's own motion - walking and turning don't count) hits by itself, without waiting for the game to recognise a slash or finish the last one; the game's own slashes still play, with their sounds.
+- **Your swing's direction:** enemies that guard by direction see the direction you swung the blade, in your swings and the game's own slashes.
+- **No slash trail, a steady view:** the game's white swoosh trail is hidden while the sword is in your hand, and the view no longer follows Link's head as he leans into a slash.
+- **Right stick up / down is the D-pad's up / down.**
 - **Aiming with the controller:** aimed items go where the right controller points.
 - **Slingshot:** a new Slingshot system shoots from the controller along where it points, following the game's own seed flight, with a 3D marker where the seed will land; the Slingshot model is held in the hand.
 - **Link's body hidden:** his small pieces (eyes, belt, pouches) and his hair stay hidden when his body leaves the eye point (rolls, swings, climbing, swimming, doors). Enemies that come close are no longer mistaken for Link and hidden.

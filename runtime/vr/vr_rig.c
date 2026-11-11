@@ -262,10 +262,12 @@ void vr_rig_begin_frame(void) {
     static bool theatre;
     float camera_distance = -1;
     bool have_eye = g_vr_config.view_mode == 1 && player_eye(pos);
-    {   // (scripted moves: the eye follows his animated head - LINK_HEAD_DETACH)
+    {   // (scripted moves: the eye follows his animated head - LINK_HEAD_DETACH. Not while the sword is in your hand
+        // (hle/vr_sword.c): his slashes lean his head, and the view stayed put while yours swing)
         extern uint64_t renderer_present_count(void);
+        extern bool vr_sword_out(void);
         g_scripted = false;
-        if (have_eye && g_head_frame && g_head_frame + 2 >= renderer_present_count() + 1) {
+        if (have_eye && g_head_frame && g_head_frame + 2 >= renderer_present_count() + 1 && !vr_sword_out()) {
             const float dx = g_head_world[0] - pos[0], dz = g_head_world[2] - pos[2], d = sqrtf(dx * dx + dz * dz);
             if (d < LINK_HEAD_ATTACHED) {
                 for (int i = 0; i < 3; i++)
@@ -995,9 +997,29 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     float w[3];  // (its game position in the world: R^T (o - t))
     for (int i = 0; i < 3; i++)
         w[i] = v[0 * 4 + i] * (slot0[19] - v[3]) + v[1 * 4 + i] * (slot0[23] - v[7]) + v[2 * 4 + i] * (slot0[27] - v[11]);
-    int side = -1;
+    int side = -1, learned = -1;
     for (int i = 0; i < 8; i++)
-        if (g_hand_mesh[i].vb == vb && g_hand_mesh[i].count == count) side = g_hand_mesh[i].side;
+        if (g_hand_mesh[i].vb == vb && g_hand_mesh[i].count == count) side = g_hand_mesh[i].side, learned = i;
+    // (a correction: two different hand meshes on one side in a frame, the other side not drawn - one was learned the
+    // wrong way round: a new pose's mesh first seen mid-slash, his right hand across his body nearer where the left
+    // was. Of the two, the one further to the game camera's right is his right hand (both measured this frame); both
+    // remembered so. Seen as the sword in the left hand, now and then)
+    static uint64_t side_count[2];
+    static float side_dx[2];
+    if (side >= 0 && g_hand_last_frame[side] == now && side_count[side] != count && g_hand_last_frame[!side] != now) {
+        const int mine = dx > side_dx[side] ? 1 : 0;
+        for (int i = 0; i < 8; i++)
+            if (g_hand_mesh[i].vb == vb && g_hand_mesh[i].count == side_count[side]) g_hand_mesh[i].side = !mine;
+        g_hand_mesh[learned].side = mine;
+        fprintf(stderr, "[vr-rig] hand meshes %llu and %llu both on the %s: %llu is the right hand\n",
+                (unsigned long long)side_count[side], (unsigned long long)count, side ? "right" : "left",
+                (unsigned long long)(mine ? count : side_count[side]));
+        if (mine == side) {  // (the one drawn first was the other hand: its place moves to the other side)
+            memcpy(g_hand_last[!side], g_hand_last[side], sizeof g_hand_last[side]);
+            g_hand_last_frame[!side] = now, side_count[!side] = side_count[side], side_dx[!side] = side_dx[side];
+        }
+        side = mine;
+    }
     if (side < 0) {
         // A new mesh (taking out an item or pulling a trigger swaps in another pose's mesh): the side not drawn yet
         // this frame, else the one whose last position is nearer; with neither known yet, the side of the game
@@ -1025,6 +1047,7 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     }
     memcpy(g_hand_last[side], w, sizeof w);
     g_hand_last_frame[side] = now;
+    side_count[side] = count, side_dx[side] = dx;
     g_hand_count_cur = count;
     memcpy(g_hand_game[side], slot0 + 16, sizeof g_hand_game[side]);
     g_hand_game_frame[side] = now;
