@@ -212,6 +212,13 @@ Picking it up is read from where the game puts it:
 - **The offset:** measured in a frame where both the item and its hand are drawn. When the item comes first, the
   hand's draw measures it and the next frame uses it.
 
+**Which hand is which** comes from them too: the game draws the sword in his right hand and the shield in his left,
+whatever the controllers do. A held item drawn clearly nearest the other hand (both hands drawn, the other 1.5x as far)
+for 10 frames running means the hand meshes were learned the wrong way round: every learned mesh changes sides
+(`held_check_side`, logged `[vr-rig] his hands were the wrong way round (the sword in his left hand): swapped`). The
+check by where his hands are relative to the way he faces (both on the other's side for 30 frames) runs only while
+he holds neither: with motion controls his arms follow the controllers, and arms held crossed swapped right hands.
+
 Once taken, it stays on that controller, with that offset, until it is on his back. These were all found in play
 with `SKYRECOMP_VR_HAND_LOG=1`:
 

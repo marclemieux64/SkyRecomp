@@ -982,6 +982,44 @@ static bool hand_rightness(const float w[3], float *out) {
     return true;
 }
 
+// Each side's hand mesh last drawn: its index count, how far to the camera's right and to his own right (hand_side).
+static uint64_t side_count[2];
+static float side_dx[2], side_right[2];
+static bool side_right_ok[2];
+#define HELD_TRUTH_RECENT 300  // (frames: the sword or shield in a hand this recently - which hand is which is theirs)
+// Every learned hand mesh changes sides, with what is known of each side's last draw.
+static void hands_swap(const char *why) {
+    for (int i = 0; i < 8; i++)
+        if (g_hand_mesh[i].vb) g_hand_mesh[i].side = !g_hand_mesh[i].side;
+#define SWAP2(a) do { __typeof__(a[0]) t_; memcpy(&t_, &a[0], sizeof t_); memcpy(&a[0], &a[1], sizeof t_); memcpy(&a[1], &t_, sizeof t_); } while (0)
+    SWAP2(g_hand_last); SWAP2(g_hand_last_frame); SWAP2(g_hand_game); SWAP2(g_hand_game_frame);
+    SWAP2(side_count); SWAP2(side_dx); SWAP2(side_right); SWAP2(side_right_ok);
+#undef SWAP2
+    for (int k = 0; k < HELD_KINDS; k++) g_held[k].side = -1, g_held[k].rel_frame = 0;  // (taken afresh)
+    fprintf(stderr, "[vr-rig] his hands were the wrong way round (%s): swapped\n", why);
+}
+
+// The game draws the sword in his right hand and the shield in his left, whatever the controllers do: a held item
+// found nearest the other hand (clearly nearer it than the right one), HELD_TRUTH_FRAMES frames running, means the
+// hands were learned the wrong way round. (The check by where his hands are - above - swapped right ones when the arms
+// were held crossed; this one can't be fooled by that.)
+#define HELD_TRUTH_FRAMES 10
+static bool held_check_side(int k, int nearest, const float d2s[2]) {
+    static int wrong;
+    static uint64_t last;
+    extern uint64_t renderer_present_count(void);
+    const uint64_t now = renderer_present_count() + 1;
+    if (nearest < 0 || d2s[0] < 0 || d2s[1] < 0 || d2s[!nearest] < 2.25f * d2s[nearest]) return false;  // (both hands, clearly)
+    const int should = k == 0 ? 1 : 0;
+    if (nearest == should) { wrong = 0; return false; }
+    if (last == now) return false;  // (once a frame: the sword and the shield both say it)
+    last = now;
+    if (++wrong < HELD_TRUTH_FRAMES) return false;
+    wrong = 0;
+    hands_swap(k == 0 ? "the sword in his left hand" : "the shield in his right hand");
+    return true;
+}
+
 // (exec.c) This hand draw's game view block and its replacement: other uniform blocks holding the same matrix (the
 // shader's normals, for its lighting) get the replacement too.
 bool vr_rig_hand_blocks(float orig[12], float repl[12]) {
@@ -1046,12 +1084,13 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
         if (g_hand_mesh[i].vb == vb && g_hand_mesh[i].count == count) side = g_hand_mesh[i].side, learned = i;
     // (a correction: two different hand meshes on one side in a frame, the other side not drawn - one was learned the
     // wrong way round: a new pose's mesh first seen mid-slash, his right hand across his body nearer where the left
-    // was. Of the two, the one further to the game camera's right is his right hand (both measured this frame); both
-    // remembered so. Seen as the sword in the left hand, now and then)
-    static uint64_t side_count[2];
-    static float side_dx[2];
+    // was. Of the two, the one further to his right (by the way he faces - hand_rightness; else the game camera's) is
+    // his right hand (both measured this frame); both remembered so. Seen as the sword in the left hand, now and then)
+    float rightness_now;
+    const bool have_rightness = hand_rightness(w, &rightness_now);
     if (side >= 0 && g_hand_last_frame[side] == now && side_count[side] != count && g_hand_last_frame[!side] != now) {
-        const int mine = dx > side_dx[side] ? 1 : 0;
+        const int mine = have_rightness && side_right_ok[side] ? (rightness_now > side_right[side] ? 1 : 0)
+                                                               : (dx > side_dx[side] ? 1 : 0);
         for (int i = 0; i < 8; i++)
             if (g_hand_mesh[i].vb == vb && g_hand_mesh[i].count == side_count[side]) g_hand_mesh[i].side = !mine;
         g_hand_mesh[learned].side = mine;
@@ -1061,6 +1100,7 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
         if (mine == side) {  // (the one drawn first was the other hand: its place moves to the other side)
             memcpy(g_hand_last[!side], g_hand_last[side], sizeof g_hand_last[side]);
             g_hand_last_frame[!side] = now, side_count[!side] = side_count[side], side_dx[!side] = side_dx[side];
+            side_right[!side] = side_right[side], side_right_ok[!side] = side_right_ok[side];
         }
         side = mine;
     }
@@ -1097,29 +1137,26 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     memcpy(g_hand_last[side], w, sizeof w);
     g_hand_last_frame[side] = now;
     side_count[side] = count, side_dx[side] = dx;
+    side_right[side] = rightness_now, side_right_ok[side] = have_rightness;
     {   // Both hands drawn this frame, each clearly on the other's side of him, for HAND_SWAPPED_FRAMES frames running:
         // they were learned the wrong way round (above) - every learned mesh changes sides. (A swing takes one hand
-        // across his body for a moment, not both for that long.)
+        // across his body for a moment, not both for that long.) Only while he holds neither the sword nor the shield:
+        // with motion controls his arms follow the controllers, and arms held crossed (a follow-through, a guard)
+        // swapped hands that were right - five times in one session. Holding either, the item says which hand is which
+        // (held_check_side).
         #define HAND_SWAPPED_FRAMES 30
-        static float right[2];
-        static uint64_t right_frame[2], counted;
+        static uint64_t counted;
         static int swapped;
-        if (hand_rightness(w, &right[side])) right_frame[side] = now;
-        if (right_frame[0] == now && right_frame[1] == now && counted != now) {
+        const bool holding = (g_held[0].side >= 0 && g_held[0].frame + HELD_TRUTH_RECENT >= now) ||
+                             (g_held[1].side >= 0 && g_held[1].frame + HELD_TRUTH_RECENT >= now);
+        if (side_right_ok[0] && side_right_ok[1] && g_hand_last_frame[0] == now && g_hand_last_frame[1] == now &&
+            counted != now) {
             counted = now;
-            swapped = right[0] > 12.0f && right[1] < -12.0f ? swapped + 1 : 0;
+            swapped = !holding && side_right[0] > 12.0f && side_right[1] < -12.0f ? swapped + 1 : 0;
             if (swapped >= HAND_SWAPPED_FRAMES) {
                 swapped = 0;
-                for (int i = 0; i < 8; i++)
-                    if (g_hand_mesh[i].vb) g_hand_mesh[i].side = !g_hand_mesh[i].side;
-                float tw[3];
-                memcpy(tw, g_hand_last[0], sizeof tw), memcpy(g_hand_last[0], g_hand_last[1], sizeof tw), memcpy(g_hand_last[1], tw, sizeof tw);
-                const uint64_t tc = side_count[0];
-                side_count[0] = side_count[1], side_count[1] = tc;
-                const float td = side_dx[0];
-                side_dx[0] = side_dx[1], side_dx[1] = td;
-                for (int k = 0; k < HELD_KINDS; k++) g_held[k].side = -1, g_held[k].rel_frame = 0;  // (taken afresh)
-                fprintf(stderr, "[vr-rig] his hands were the wrong way round (the left one on his right): swapped\n");
+                hands_swap("the left one on his right");
+                side = !side;
             }
         }
     }
@@ -1611,6 +1648,7 @@ static bool held_draw(const float *slot0, uint64_t size0, uint64_t count) {
             d2s[s] = d2;
             if (d2 < best) best = d2, side = s;
         }
+        const int nearest = side;  // (the hand the game draws it nearest: which hand is which - held_check_side)
         // Its distance from his eye point: on his back (sword sheathed, shield away) it sits close to it (the sheathed
         // hilt ~20 units: vr_sword.c measured the blade's base 19-20 sheathed, 47-125 drawn).
         float eye_d = -1;
@@ -1654,6 +1692,7 @@ static bool held_draw(const float *slot0, uint64_t size0, uint64_t count) {
                 last_eye[k] = now, fprintf(stderr, "[held-log] frame %llu kind %d held, %.1f from the eye\n", (unsigned long long)now, k, eye_d);
         }
         if (part && side < 0) return false;  // (a known part's count drawn elsewhere: leaves the item's state alone)
+        if (!part && held_check_side(k, nearest, d2s) && side >= 0) side = !side;  // (the hands swapped under it)
         memcpy(g_held[k].block, m, sizeof g_held[k].block);
         g_held[k].frame = now;
         if (side != g_held[k].side) g_held[k].rel_frame = 0;  // (another hand: its offset measured afresh)

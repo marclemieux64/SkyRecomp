@@ -5,7 +5,7 @@
 Experimental SteamVR / OpenXR support (off by default; VR Options > Enable VR Mode), from @marclemieux64 and @AL56201. See [docs/vr.md](docs/vr.md).
 
 ### 1st person
-- **Hands and held items:** Link's hands, sword and shield stay on their controllers through swings, shield raises and bashes; the hands are on the correct sides (and correct themselves if a new hand pose was taken for the wrong one), and the blade shows in both eyes.
+- **Hands and held items:** Link's hands, sword and shield stay on their controllers through swings, shield raises and bashes; the hands are on the correct sides (and correct themselves if they were taken the wrong way round - the sword is always in his right hand, the shield in his left), and the blade shows in both eyes.
 - **Sword hits from your blade:** a slash hits with the game's three sword attack colliders, now placed along the blade in your right hand, so what gets cut is where you swing (Z-targeting no longer steers it).
 - **Swings hit on their own:** a fast swing of the blade (its tip faster than VR Options > Swing Speed to Hit, 3 m/s by default, measured from your hand's own motion - walking and turning don't count) hits by itself, without waiting for the game to recognise a slash or finish the last one; the game's own slashes still play, with their sounds.
 - **Your swing's direction:** enemies that guard by direction see the direction you swung the blade, in your swings and the game's own slashes.
