@@ -972,6 +972,16 @@ static void held_measure(int k) {    // (the item and its hand drawn this frame:
 void vr_rig_set_hand_draw(int side) {
     g_hand_draw = side, g_hand_blocks = false, g_door_blocks = false, g_held_on = false, g_skin_on = false;
 }
+// How far to Link's right a point of the world is (negative: to his left), by the way he faces. False: not known.
+static bool hand_rightness(const float w[3], float *out) {
+    extern bool player_yaw(float *yaw);
+    float yaw;
+    if (!player_yaw(&yaw)) return false;
+    const float fx = sinf(yaw), fz = cosf(yaw), dx = w[0] - g_rig.link[0], dz = w[2] - g_rig.link[2];
+    *out = -dx * fz + dz * fx;  // (his right: (-fz, fx) - facing -z it is +x)
+    return true;
+}
+
 // (exec.c) This hand draw's game view block and its replacement: other uniform blocks holding the same matrix (the
 // shader's normals, for its lighting) get the replacement too.
 bool vr_rig_hand_blocks(float orig[12], float repl[12]) {
@@ -1071,9 +1081,14 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
             }
             side = drawn[0] != drawn[1] ? (drawn[0] ? 1 : 0) : d2[0] <= d2[1] ? 0 : 1;
         } else {
+            // (by the way Link faces - hand_rightness - when it is known: the camera's side is his own only while the
+            // camera is behind him; spawned with it in front of him, his hands were taken mirrored - the sword in the
+            // left one - and stayed so. Read 2026-11-11 from a running game in that state.)
             static int swap = -1;
             if (swap < 0) swap = getenv("SKYRECOMP_VR_HAND_SWAP") != NULL;
-            side = (dx < 0) == !swap ? 0 : 1;
+            float rightness;
+            if (hand_rightness(w, &rightness) && fabsf(rightness) > 5.0f) side = (rightness > 0) == !swap ? 1 : 0;
+            else side = (dx < 0) == !swap ? 0 : 1;
         }
         static int next;
         g_hand_mesh[next] = (__typeof__(g_hand_mesh[0])){vb, count, side};
@@ -1082,6 +1097,32 @@ static int hand_side(const float *slot0, uint64_t count, uint64_t vb, uint64_t v
     memcpy(g_hand_last[side], w, sizeof w);
     g_hand_last_frame[side] = now;
     side_count[side] = count, side_dx[side] = dx;
+    {   // Both hands drawn this frame, each clearly on the other's side of him, for HAND_SWAPPED_FRAMES frames running:
+        // they were learned the wrong way round (above) - every learned mesh changes sides. (A swing takes one hand
+        // across his body for a moment, not both for that long.)
+        #define HAND_SWAPPED_FRAMES 30
+        static float right[2];
+        static uint64_t right_frame[2], counted;
+        static int swapped;
+        if (hand_rightness(w, &right[side])) right_frame[side] = now;
+        if (right_frame[0] == now && right_frame[1] == now && counted != now) {
+            counted = now;
+            swapped = right[0] > 12.0f && right[1] < -12.0f ? swapped + 1 : 0;
+            if (swapped >= HAND_SWAPPED_FRAMES) {
+                swapped = 0;
+                for (int i = 0; i < 8; i++)
+                    if (g_hand_mesh[i].vb) g_hand_mesh[i].side = !g_hand_mesh[i].side;
+                float tw[3];
+                memcpy(tw, g_hand_last[0], sizeof tw), memcpy(g_hand_last[0], g_hand_last[1], sizeof tw), memcpy(g_hand_last[1], tw, sizeof tw);
+                const uint64_t tc = side_count[0];
+                side_count[0] = side_count[1], side_count[1] = tc;
+                const float td = side_dx[0];
+                side_dx[0] = side_dx[1], side_dx[1] = td;
+                for (int k = 0; k < HELD_KINDS; k++) g_held[k].side = -1, g_held[k].rel_frame = 0;  // (taken afresh)
+                fprintf(stderr, "[vr-rig] his hands were the wrong way round (the left one on his right): swapped\n");
+            }
+        }
+    }
     g_hand_count_cur = count;
     memcpy(g_hand_game[side], slot0 + 16, sizeof g_hand_game[side]);
     g_hand_game_frame[side] = now;

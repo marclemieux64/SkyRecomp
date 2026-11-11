@@ -47,6 +47,14 @@ static const float *player_position_live(void) {
     return q[0] == 0 && q[1] == 0 && q[2] == 0 ? NULL : q;
 }
 
+static bool player_yaw_live(float *yaw) {
+    if (!g_is_skyward_100) return false;
+    const uint64_t p = *(const uint64_t *)(uintptr_t)PLAYER_PTR;
+    if (!heap_ptr(p) || (p & 7) || *(const uint64_t *)(uintptr_t)p != PLAYER_VTABLE) return false;
+    if (yaw) *yaw = *(const int16_t *)(uintptr_t)(p + 0x13e) * (float)(M_PI / 32768.0);
+    return true;
+}
+
 static bool player_eye_live(float eye[3]) {
     if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     if (!heap_ptr(*(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF)) {  // (no Link - title, loading - or not moved yet)
@@ -144,8 +152,8 @@ static bool game_camera_view_live(float view[12]) {
 // next frame while a frame is drawn: what the draws need from game memory is taken when their list is submitted, and
 // the replay thread reads that instead of live memory.
 typedef struct PlayerSnap {
-    bool eye_ok, feet_ok, cam_ok, beetle, boss_lock;
-    float eye[3], feet, cam[12];
+    bool eye_ok, feet_ok, cam_ok, beetle, boss_lock, yaw_ok;
+    float eye[3], feet, cam[12], yaw;
 } PlayerSnap;
 static __thread const PlayerSnap *tl_snap;
 
@@ -157,6 +165,7 @@ void player_snapshot_take(void *out) {
     s->cam_ok = game_camera_view_live(s->cam);
     s->beetle = player_beetle_flying_live();
     s->boss_lock = player_boss_lock_live();
+    s->yaw_ok = player_yaw_live(&s->yaw);
 }
 void player_snapshot_use(const void *snap) { tl_snap = snap; }  // (this thread; NULL: live memory again)
 
@@ -164,6 +173,16 @@ bool player_eye(float eye[3]) {
     if (!tl_snap) return player_eye_live(eye);
     if (tl_snap->eye_ok && eye) memcpy(eye, tl_snap->eye, sizeof tl_snap->eye);
     return tl_snap->eye_ok;
+}
+
+// The way Link faces (radians about the vertical; 0: along +z, a quarter turn: along +x): the player's angle, s16 at
+// +0x13e of *(main+0x2bf9940) (a door's code compares its own +0x13e with the direction to him). Read 2026-11-11 from a
+// running game with the camera in front of him: with it, the hand the game draws on his right is the one holding
+// the sword.
+bool player_yaw(float *yaw) {
+    if (!tl_snap) return player_yaw_live(yaw);
+    if (tl_snap->yaw_ok && yaw) *yaw = tl_snap->yaw;
+    return tl_snap->yaw_ok;
 }
 
 bool player_feet_y(float *y) {
