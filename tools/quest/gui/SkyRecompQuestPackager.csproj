@@ -5,8 +5,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>SkyRecomp-Quest-Packager</AssemblyName>
+    <AssemblyName>Skyrecomp-VR APK Builder</AssemblyName>
     <RootNamespace>SkyRecompQuestPackager</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
+    <ApplicationIcon>..\..\..\docs\icon\icon.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup Condition="'$(PayloadPath)' != ''">
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="SkyRecomp.Payload.zip" />
+  </ItemGroup>
 </Project>

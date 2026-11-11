@@ -1,0 +1,54 @@
+# What the personal APK builders (Windows exe, Linux AppImage) carry inside them: only the source files the
+# APK build needs. A line ending in "/" is a folder (its Git-tracked or trackable files); any other line is one
+# file. Nothing else from the repository is shipped: no screenshots, no documentation images, no randomizer
+# data, and never game files, generated game code or keys (those are not in Git in the first place).
+
+# Licences of this project and of the bundled third-party sources
+LICENSE
+LICENSE-LASRecomp
+LICENSE-OpenXR.txt
+
+# The Android project and the game runtime it compiles
+android/
+runtime/
+
+# Third-party sources the runtime is built with (each with its licence)
+third_party/imgui/LICENSE.txt
+third_party/imgui/imconfig.h
+third_party/imgui/imgui.cpp
+third_party/imgui/imgui.h
+third_party/imgui/imgui_draw.cpp
+third_party/imgui/imgui_internal.h
+third_party/imgui/imgui_tables.cpp
+third_party/imgui/imgui_widgets.cpp
+third_party/imgui/imstb_rectpack.h
+third_party/imgui/imstb_textedit.h
+third_party/imgui/imstb_truetype.h
+third_party/imgui/backends/imgui_impl_sdl3.cpp
+third_party/imgui/backends/imgui_impl_sdl3.h
+third_party/imgui/backends/imgui_impl_vulkan.cpp
+third_party/imgui/backends/imgui_impl_vulkan.h
+third_party/reshade/
+third_party/smaa/
+third_party/xxhash/
+
+# The font of the builder window and of the game's menus (SIL Open Font License)
+fonts/
+
+# The recompiler: turns the player's own game executable into C on their PC
+tools/gen.py
+tools/lifter.py
+tools/analyze.py
+tools/nso.py
+tools/passes.py
+tools/patches.py
+tools/simd_c.py
+tools/rando/patch_variants.json
+tools/gamelib_entry.c
+tools/subsdk8_empty.c
+
+# The build scripts
+tools/quest/build-personal-apk.ps1
+tools/quest/install-toolchain.ps1
+tools/quest/remove-toolchain.ps1
+tools/quest/linux/

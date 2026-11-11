@@ -35,7 +35,7 @@ $androidZip = Join-Path $downloads 'android-command-line-tools.zip'
 $java = Get-ChildItem $jdkRoot -Recurse -Filter java.exe -ErrorAction SilentlyContinue |
     Where-Object FullName -Match '\\bin\\java\.exe$' | Select-Object -First 1
 if (-not $java) {
-    Write-Output 'Downloading Microsoft OpenJDK 21...'
+    Write-Output '== Tools 1/3: Downloading Java (about 200 MB)'
     Download-File $jdkUrl $jdkZip
     Expand-Archive -LiteralPath $jdkZip -DestinationPath $jdkRoot -Force
     $java = Get-ChildItem $jdkRoot -Recurse -Filter java.exe |
@@ -47,7 +47,7 @@ $env:JAVA_HOME = $javaHome
 
 $sdkManager = Join-Path $sdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat'
 if (-not (Test-Path -LiteralPath $sdkManager)) {
-    Write-Output 'Downloading the Android command-line tools...'
+    Write-Output '== Tools 2/3: Downloading the Android command-line tools'
     Download-File $androidToolsUrl $androidZip
     $actualHash = (Get-FileHash -LiteralPath $androidZip -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -ne $androidToolsSha256) { throw "Android tools checksum mismatch: $actualHash" }
@@ -63,7 +63,7 @@ if (-not (Test-Path -LiteralPath $sdkManager)) {
 Write-Output 'Accepting Android SDK licenses...'
 1..100 | ForEach-Object { 'y' } | & $sdkManager "--sdk_root=$sdkRoot" --licenses | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Android SDK license acceptance failed.' }
-Write-Output 'Installing Android Platform, Build Tools, NDK, CMake, and ADB...'
+Write-Output '== Tools 3/3: Downloading the Android compiler and SDK (about 2 GB, several minutes)'
 & $sdkManager "--sdk_root=$sdkRoot" `
     'platforms;android-36' 'build-tools;35.0.0' 'platform-tools' `
     'ndk;27.1.12297006' 'cmake;3.31.6'
