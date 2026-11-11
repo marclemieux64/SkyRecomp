@@ -1,0 +1,66 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.skyrecomp.quest'
+    compileSdk 36
+    ndkVersion '27.1.12297006'
+
+    defaultConfig {
+        applicationId 'io.github.skyrecomp.quest'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-smoketest.1'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static'
+                cppFlags '-std=c++17'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    buildFeatures {
+        prefab true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.31.6'
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach {
+            outputFileName = "SkyRecomp-Quest-SmokeTest-${variant.versionName}.apk"
+        }
+    }
+}
+
+dependencies {
+    // Supplies both the Android OpenXR loader .so and its Prefab CMake package.
+    implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.63'
+}

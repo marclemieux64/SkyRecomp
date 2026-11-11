@@ -40,6 +40,10 @@ generated/
 /tools/*.exe
 build/
 cache/
+/android/.gradle/
+/android/app/.cxx/
+/android/app/build/
+/android/local.properties
 save/
 scratch/
 

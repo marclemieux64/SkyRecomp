@@ -1,0 +1,3 @@
+# Copy this file to local.properties and use forward slashes or escaped
+# backslashes. Never commit a machine-specific local.properties file.
+sdk.dir=C:/Android/Sdk
