@@ -82,6 +82,19 @@ static bool player_beetle_flying_live(void) {
 
 #define GAME_CAMERA_VIEW (MAIN_BASE + 0x2bfda90ull)
 
+// The boss door's key puzzle: from the A that examines the lock to the B that backs out (or the door opening), Link's
+// actor +0x9478 points at the boss door's lock object (vtable main+0x1601018); otherwise it is 0 (and the same object
+// sits at +0x9360 while he only stands at it). Measured 2026-11-10 headset-free at Skyview's boss door, two visits
+// (SKYRECOMP_WORD_WATCH "p9478": set on the frame of the A, cleared on the frame of the B, both times).
+#define BOSS_LOCK_VTABLE (MAIN_BASE + 0x1601018)
+static bool player_boss_lock_live(void) {
+    if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
+    const uint64_t actor = *(const uint64_t *)(uintptr_t)PLAYER_ACTOR_REF;
+    if (!heap_ptr(actor)) return false;
+    const uint64_t d = *(const volatile uint64_t *)(uintptr_t)(actor + 0x9478);
+    return heap_ptr(d) && *(const volatile uint64_t *)(uintptr_t)d == BOSS_LOCK_VTABLE;
+}
+
 static bool game_camera_view_live(float view[12]) {
     if (!g_is_skyward_100) return false;  // (game 1.0.0's addresses: not another version's - runtime/main.c)
     const float *v = (const float *)(uintptr_t)GAME_CAMERA_VIEW;
@@ -102,7 +115,7 @@ static bool game_camera_view_live(float view[12]) {
 // next frame while a frame is drawn: what the draws need from game memory is taken when their list is submitted, and
 // the replay thread reads that instead of live memory.
 typedef struct PlayerSnap {
-    bool eye_ok, feet_ok, cam_ok, beetle;
+    bool eye_ok, feet_ok, cam_ok, beetle, boss_lock;
     float eye[3], feet, cam[12];
 } PlayerSnap;
 static __thread const PlayerSnap *tl_snap;
@@ -114,6 +127,7 @@ void player_snapshot_take(void *out) {
     s->feet_ok = player_feet_y_live(&s->feet);
     s->cam_ok = game_camera_view_live(s->cam);
     s->beetle = player_beetle_flying_live();
+    s->boss_lock = player_boss_lock_live();
 }
 void player_snapshot_use(const void *snap) { tl_snap = snap; }  // (this thread; NULL: live memory again)
 
@@ -129,6 +143,7 @@ bool player_feet_y(float *y) {
     return tl_snap->feet_ok;
 }
 bool player_beetle_flying(void) { return tl_snap ? tl_snap->beetle : player_beetle_flying_live(); }
+bool player_boss_lock(void) { return tl_snap ? tl_snap->boss_lock : player_boss_lock_live(); }
 
 bool game_camera_view(float view[12]) {
     if (!tl_snap) return game_camera_view_live(view);

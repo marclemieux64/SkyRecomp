@@ -11,6 +11,7 @@ Experimental SteamVR / OpenXR support (off by default; VR Options > Enable VR Mo
 - **Slingshot:** a new Slingshot system shoots from the controller along where it points, following the game's own seed flight, with a 3D marker where the seed will land; the Slingshot model is held in the hand.
 - **Link's body hidden:** his small pieces (eyes, belt, pouches) and his hair stay hidden when his body leaves the eye point (rolls, swings, climbing, swimming, doors). Enemies that come close are no longer mistaken for Link and hidden.
 - **Beetle:** it launches from the right controller along where it points; the Beetle and its bracelet sit on your wrist; while it flies, the view switches to the game's own camera following it, and returns to 1st person when it's caught.
+- **Boss-key puzzle:** while you examine a boss door's lock and turn the key, the view switches to the game's own close-up of the key and the lock, and returns to 1st person when you back out or the door opens.
 
 ### Rendering
 - **Culling follows the headset:** objects are culled against the eyes' view, and their draw distance is measured along where you look.

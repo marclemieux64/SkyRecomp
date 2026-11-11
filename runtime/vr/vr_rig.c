@@ -293,23 +293,31 @@ void vr_rig_begin_frame(void) {
         else if (camera_distance < THEATRE_LEAVE) theatre = false;
     }
     if (!have_eye) theatre = false;
-    // The Beetle in flight: the game's own camera follows it (its standard view), as theatre; 1st person again once
-    // it is caught (runtime/hle/player.c). SKYRECOMP_VR_BEETLE_FP=1 stays in 1st person.
+    // The game's own camera, as theatre, while it shows what 1st person can't (runtime/hle/player.c); 1st person again
+    // after:
+    //  - the Beetle in flight: its camera follows it - until it is caught (SKYRECOMP_VR_BEETLE_FP=1 stays in 1st person);
+    //  - the boss door's key puzzle: its close-up of the key and the lock - until he backs out or the door opens
+    //    (SKYRECOMP_VR_BOSS_LOCK_FP=1 stays in 1st person).
     {
-        extern bool player_beetle_flying(void);
-        static int keep = -1;
-        if (keep < 0) keep = getenv("SKYRECOMP_VR_BEETLE_FP") != NULL;
-        // (held through a few frames that read it as caught: one bad read of Link's actor didn't bring 1st person back
+        extern bool player_beetle_flying(void), player_boss_lock(void);
+        static int keep_beetle = -1, keep_lock = -1;
+        if (keep_beetle < 0) keep_beetle = getenv("SKYRECOMP_VR_BEETLE_FP") != NULL;
+        if (keep_lock < 0) keep_lock = getenv("SKYRECOMP_VR_BOSS_LOCK_FP") != NULL;
+        const bool now_beetle = have_eye && !keep_beetle && player_beetle_flying();
+        const bool now_lock = have_eye && !keep_lock && player_boss_lock();
+        // (held through a few frames that read it as over: one bad read of Link's actor didn't bring 1st person back
         // mid-flight)
         static int miss;
-        const bool now_flying = have_eye && !keep && player_beetle_flying();
-        static bool flying_kept;
-        if (now_flying) flying_kept = true, miss = 0;
-        else if (flying_kept && ++miss > 4) flying_kept = false;
-        const bool beetle = flying_kept && have_eye && !keep;
+        static bool kept, kept_lock;
+        if (now_beetle || now_lock) kept = true, kept_lock = now_lock, miss = 0;
+        else if (kept && ++miss > 4) kept = false;
+        const bool beetle = kept && have_eye;
         static bool was;
-        if (beetle != was) fprintf(stderr, "[vr-rig] the Beetle %s: %s\n", beetle ? "launched" : "caught",
-                                   beetle ? "the game's camera follows it" : "1st person again");
+        if (beetle != was)
+            fprintf(stderr, "[vr-rig] %s: %s\n",
+                    kept_lock ? (beetle ? "the boss door's lock examined" : "the boss door's lock left")
+                              : (beetle ? "the Beetle launched" : "the Beetle caught"),
+                    beetle ? "the game's camera" : "1st person again");
         was = beetle;
         static bool beetle_theatre;  // (leaving: back to 1st person unless the camera is far for its own reasons)
         if (beetle) theatre = true, beetle_theatre = true;
