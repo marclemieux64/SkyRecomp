@@ -34,13 +34,13 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease lintRelease
+          ./gradlew --no-daemon assemblePublicRuntimeRelease lintPublicRuntimeRelease
 
       - name: Verify APK
         id: apk
         shell: bash
         run: |
-          APK=$(find android/app/build/outputs/apk/release -name '*.apk' -type f -print -quit)
+          APK=$(find android/app/build/outputs/apk/publicRuntime/release -name '*.apk' -type f -print -quit)
           test -n "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee android/app/build/quest-badging.txt

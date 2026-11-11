@@ -26,6 +26,17 @@ android {
         }
     }
 
+    flavorDimensions += 'content'
+    productFlavors {
+        publicRuntime {
+            dimension 'content'
+        }
+        personal {
+            dimension 'content'
+            resValue 'string', 'app_name', 'SkyRecomp Quest Personal Build'
+        }
+    }
+
     buildTypes {
         debug {
             debuggable true
@@ -55,7 +66,8 @@ android {
 
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach {
-            outputFileName = "SkyRecomp-Quest-SmokeTest-${variant.versionName}.apk"
+            def kind = variant.flavorName == 'personal' ? 'Personal' : 'SmokeTest'
+            outputFileName = "SkyRecomp-Quest-${kind}-${variant.versionName}.apk"
         }
     }
 }

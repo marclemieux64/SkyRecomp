@@ -44,6 +44,7 @@ cache/
 /android/app/.cxx/
 /android/app/build/
 /android/local.properties
+/android/app/src/personal/
 save/
 scratch/
 
