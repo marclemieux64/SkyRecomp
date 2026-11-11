@@ -211,6 +211,28 @@ NVN(nvnCommandBufferSetRenderTargets) {
     }
     rt.depth = s.x[4] ? (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[4]) : 0;
     if (s.x[5]) { rt.has_dview = 1; memcpy(&rt.dview, (void *)(uintptr_t)s.x[5], sizeof(NvnTextureView)); }
+#if defined(_WIN32)
+    {   // (RE) SKYRECOMP_RT_BT=<width>: who binds a colour target that wide - the chain of guest functions, 4 times
+        static int want = -1, said;
+        if (want < 0) want = getenv("SKYRECOMP_RT_BT") ? atoi(getenv("SKYRECOMP_RT_BT")) : 0;
+        const NvnTexture *t0 = (const NvnTexture *)(uintptr_t)rt.tex[0];
+        if (want && t0 && (int)t0->width == want && said < 4) {
+            said++;
+            extern unsigned short __stdcall RtlCaptureStackBackTrace(unsigned long, unsigned long, void **, unsigned long *);
+            const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);
+            void *frames[64];
+            const unsigned short k = RtlCaptureStackBackTrace(0, 64, frames, NULL);
+            char line[4096];
+            int len = snprintf(line, sizeof line, "[rt-bt] %dx%d bound (guest lr %llx):", (int)t0->width, (int)t0->height, (unsigned long long)c->x[30]);
+            for (unsigned short j = 0; j < k && len < (int)sizeof line - 40; j++) {
+                uint64_t off;
+                const char *fn = rt_host_fn_name((uint64_t)(uintptr_t)frames[j], &off);
+                if (fn) len += snprintf(line + len, sizeof line - len, " %s", fn);
+            }
+            LOG("%s\n", line);
+        }
+    }
+#endif
     CmdRec *r = record(c, CMD_SET_RENDER_TARGETS, sizeof rt, &s);
     r->x[0] = (uint64_t)n;
     memcpy(r->extra, &rt, sizeof rt);

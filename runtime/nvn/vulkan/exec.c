@@ -4698,8 +4698,23 @@ static void draw_(CmdRec *r, bool indexed) {
     if (vk_hud_layer_on()) hud_mark_scene_targets(pr);
     {   // SKYRECOMP_VR_DRAW_LOG=<frame>: that frame's draws (eye 0)
         static long at = -2;
-        if (at == -2) { const char *e = getenv("SKYRECOMP_VR_DRAW_LOG"); at = e ? atol(e) : -1; }
-        if (at >= 0 && (long)renderer_present_count() == at && !vk_vr_eye()) {
+        // (=menu:<frame>: that frame, and the 150th frame of the first menu opened over the live world - to compare)
+        static long menu_base = -1;
+        static bool menu_mode;
+        if (at == -2) {
+            const char *e = getenv("SKYRECOMP_VR_DRAW_LOG");
+            menu_mode = e && !strncmp(e, "menu:", 5);
+            at = e ? atol(menu_mode ? e + 5 : e) : -1;
+        }
+        bool menu_frame = false;
+        if (menu_mode) {
+            extern uint64_t vr_world_menu_opened_frame(void);
+            if (menu_base < 0 && vr_world_menu_opened_frame()) menu_base = (long)vr_world_menu_opened_frame();
+            menu_frame = menu_base >= 0 && (long)renderer_present_count() == menu_base + 150;
+            static int said;
+            if (menu_frame && !said++) LOG("[draw] ---- menu frame %ld ----\n", menu_base + 150);
+        }
+        if (at >= 0 && ((long)renderer_present_count() == at || menu_frame) && !vk_vr_eye()) {
             const Range c0 = st.ubuf[0][0];
             const float *f = c0.addr && c0.size >= 112 ? (const float *)(uintptr_t)c0.addr : NULL;
             NvnTexture *t = st.rt.ncolor ? st.rt.color[0] : NULL;
