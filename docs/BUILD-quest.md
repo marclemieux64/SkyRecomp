@@ -48,51 +48,60 @@ APK. With `-Install`, it also installs the APK and copies the extracted data to
 the app-specific Quest directory through ADB. Generated code and game data are
 ignored by Git and must never be uploaded to a release.
 
-This packaging path is not playable yet: the Android runtime still needs to
-load `libskygame.so`, mount the copied data, and connect the game renderer to
-the OpenXR frame loop.
+The `personal` APK carries the game runtime itself: `android/engine` builds
+`runtime/` as `libmain.so` (SDL3's Android activity, the Vulkan renderer, the
+OpenXR code of the PC VR build) and `libskygame.so` is linked against it. The
+`publicRuntime` flavor is still the smoke test. State of the personal build:
 
-Windows players download the portable Quest Packager ZIP, extract the complete
-folder, and double-click `SkyRecomp-Quest-Packager.exe`. The native Windows GUI
-provides folder pickers, build progress, optional installation, and an
-output-folder shortcut. Its **Install required tools** button downloads a
-private Microsoft OpenJDK 21 and the official Android command-line tools, then
-installs the pinned Platform, Build Tools, NDK, CMake, and ADB packages. The
-player does not need to configure a system-wide Java or Android installation.
-The adjacent **Remove installed tools** button deletes only that private
-`toolchain/` directory; it does not touch extracted game data or built APKs.
+- It compiles, links and packages; it has **not been run on a headset yet**.
+- It needs Vulkan 1.3 and Android 14 (`minSdk 34`): Quest 3 / 3S.
+- The game's fixed address range (`0x7000000000`-`0x7320000000`) must be free
+  in the app process; if it is not, logcat (`adb logcat -s SkyRecomp`) lists
+  what is in the way.
+- The two pre-rendered movies (prologue, ending) are not decoded: FFmpeg is not
+  part of the Android build (`runtime/platform/android_stubs.c`).
+- The first native build downloads SDL3, shaderc and VMA sources.
+
+Windows players download and run the single `Skyrecomp-VR APK Builder.exe`.
+The application embeds and privately extracts its build payload automatically.
+Its GUI only asks for the extracted game folder; on the first build it offers
+to download Microsoft OpenJDK 21 and the official Android command-line tools,
+then installs the pinned Platform, Build Tools, NDK, CMake, and ADB packages.
+The player does not need to configure Java or Android SDK paths; Python 3
+must be installed, because the code generator runs on it. The
+**Remove installed tools** button deletes only that private toolchain; it does
+not touch extracted game data or built APKs.
 The PowerShell script remains the internal build
 backend so the same operation can be automated and diagnosed from its log.
 
-Maintainers can create the portable package with
+Linux players (x86-64) download `Skyrecomp-VR-APK-Builder-x86_64.AppImage`,
+make it executable and run it. It is the same builder with the same steps
+(`tools/quest/gui-linux`, scripts in `tools/quest/linux/`); it keeps its
+sources, private tools and the built APK in
+`~/.local/share/skyrecomp-vr-apk-builder/`. It needs `bash`, `curl`, `tar` and
+`python3`, and for the USB install the usual Android udev rules.
+`tools/quest/build-appimage.sh` builds it (needs the .NET 8 SDK).
+
+Maintainers can create the standalone executable with
 `tools/quest/build-packager.ps1`. Tags matching `quest-packager-v*` compile and
-self-test the real Windows executable before attaching the ZIP to a GitHub
+self-test the real Windows executable before attaching the standalone EXE to a GitHub
 pre-release.
 
 The finished APK is placed in
-`android/app/build/outputs/apk/personal/release/`. It contains generated code
+`android/app/build/outputs/apk/personal/release/` (under
+`%LOCALAPPDATA%\Skyrecomp-VR APK Builder\payload\<version>\` when built
+with the GUI; **Open output folder** goes there). It contains generated code
 derived from that player's game executable, so it is a personal artifact and
 must not be uploaded or shared.
 
 ## Engine work still required
 
-The desktop executable cannot simply be copied into this APK. A playable port
-needs these boundaries moved to Android:
-
-1. Add `runtime/platform/android.c`, including guest address reservation,
-   monotonic timing, fault handling, and app-private storage paths. Re-exec is
-   not available to an Android Activity.
-2. Build the generated AArch64 game code into an APK native library. Android
-   cannot build or replace that library on the headset, so game extraction and
-   code generation remain a host-side step.
-3. Merge the Android OpenXR/Vulkan bootstrap supplied here into
-   `runtime/vr/vr.c`, then create swapchains from the Activity lifecycle.
-4. Adapt the Vulkan presenter to an OpenXR-only Android path (no desktop mirror
-   window) and package shaderc for ARM64, because Maxwell shaders are translated
-   at runtime.
-5. Package ARM64 FFmpeg or replace the movie HLE with Android MediaCodec, and
-   provide SDL3's Android Java/native integration for audio and input.
-6. Replace the desktop launcher and file picker with Android storage access,
-   then test memory use and frame pacing on Quest hardware.
+1. Run the personal build on a headset and fix what the first boots show
+   (address-space reservation, Adreno Vulkan features and texture formats,
+   the Activity's pause / resume lifecycle).
+2. Present only through OpenXR: the Android window surface is still created
+   as on desktop, with the mirror off by default.
+3. Package ARM64 FFmpeg or replace the movie HLE with Android MediaCodec.
+4. Measure memory use and frame pacing on Quest hardware.
 
 No game files or generated Nintendo code belong in a distributable APK.

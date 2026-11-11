@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Linux build of the personal APK builder (packaged as an AppImage by tools/quest/build-appimage.sh).
+       The Windows one is tools/quest/gui (Windows Forms); both drive the same steps and share the look. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>skyrecomp-vr-apk-builder</AssemblyName>
+    <RootNamespace>SkyRecompQuestBuilder</RootNamespace>
+    <Version>0.2.0</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
+  </ItemGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="..\..\..\fonts\Baloo2-SemiBold.ttf" Link="Assets\Baloo2-SemiBold.ttf" />
+    <AvaloniaResource Include="..\..\..\docs\icon\icon_1024.png" Link="Assets\icon.png" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PayloadPath)' != ''">
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="SkyRecomp.Payload.zip" />
+  </ItemGroup>
+</Project>

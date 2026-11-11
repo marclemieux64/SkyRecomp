@@ -19,21 +19,23 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build portable executable bundle
+      - name: Build standalone executable
         shell: powershell
         run: tools/quest/build-packager.ps1
 
       - name: Test packaged executable
         shell: powershell
         run: |
-          Expand-Archive build/quest-packager-release/SkyRecomp-Quest-Packager-Windows-x64.zip build/packager-test
-          $test = Start-Process build/packager-test/SkyRecomp-Quest-Packager.exe -ArgumentList '--self-test' -Wait -PassThru
+          # Run from outside the checkout so the embedded payload is what gets tested.
+          $exe = Join-Path $env:RUNNER_TEMP 'Skyrecomp-VR APK Builder.exe'
+          Copy-Item 'build/quest-packager-release/Skyrecomp-VR APK Builder.exe' $exe
+          $test = Start-Process $exe -ArgumentList '--self-test' -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw 'Packaged GUI self-test failed.' }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SkyRecomp-Quest-Packager-Windows-x64
-          path: build/quest-packager-release/SkyRecomp-Quest-Packager-Windows-x64.zip
+          name: Skyrecomp-VR-APK-Builder-Windows-x64
+          path: build/quest-packager-release/Skyrecomp-VR APK Builder.exe
           if-no-files-found: error
 
       - name: Publish tagged pre-release
@@ -43,8 +45,46 @@ jobs:
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows portable personal APK builder. Extract the ZIP, then run
-            `SkyRecomp-Quest-Packager.exe`. Game data remains on the player's PC.
+            Standalone personal APK builders. Windows: run
+            `Skyrecomp-VR APK Builder.exe`; no extraction is required. Linux:
+            make `Skyrecomp-VR-APK-Builder-x86_64.AppImage` executable and run it.
 
-            This is a packaging preview; the Quest game runtime is not playable yet.
-          files: build/quest-packager-release/SkyRecomp-Quest-Packager-Windows-x64.zip
+            Test pre-release. The builders make a personal APK that contains the
+            game runtime and your own recompiled game code, and install it with
+            your game data on a Quest 3 / 3S over USB. The app itself has not been
+            run on a headset yet: expect it not to boot, and please report what
+            `adb logcat -s SkyRecomp` shows. No game files are included.
+          files: build/quest-packager-release/Skyrecomp-VR APK Builder.exe
+
+  linux-packager:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build AppImage
+        run: bash tools/quest/build-appimage.sh
+
+      - name: Test packaged AppImage
+        run: |
+          # Run from outside the checkout so the embedded payload is what gets tested.
+          cp build/quest-packager-release/Skyrecomp-VR-APK-Builder-x86_64.AppImage "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          ./Skyrecomp-VR-APK-Builder-x86_64.AppImage --appimage-extract-and-run --self-test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Skyrecomp-VR-APK-Builder-Linux-x86_64
+          path: build/quest-packager-release/Skyrecomp-VR-APK-Builder-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Publish tagged pre-release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          generate_release_notes: false
+          files: build/quest-packager-release/Skyrecomp-VR-APK-Builder-x86_64.AppImage
