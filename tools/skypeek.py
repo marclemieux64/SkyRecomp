@@ -133,6 +133,77 @@ def state(g):
         print()
 
 
+def exe_symbol(g, name):
+    """The address of one of the exe's exported symbols in the running process (the exe exports them all)."""
+    k32.K32EnumProcessModules.argtypes = [wt.HANDLE, ctypes.POINTER(ctypes.c_void_p), wt.DWORD, ctypes.POINTER(wt.DWORD)]
+    mods = (ctypes.c_void_p * 4)()
+    need = wt.DWORD()
+    if not k32.K32EnumProcessModules(wt.HANDLE(g.h), mods, ctypes.sizeof(mods), ctypes.byref(need)):
+        return 0
+    base = mods[0]
+    hdr = g.read(base, 0x1000)
+    pe = struct.unpack_from('<I', hdr, 0x3c)[0]
+    exp_rva, exp_size = struct.unpack_from('<II', hdr, pe + 0x88)
+    exp = g.read(base + exp_rva, 40)
+    nnames, = struct.unpack_from('<I', exp, 24)
+    funcs, names, ords = struct.unpack_from('<III', exp, 28)
+    name_rvas = struct.unpack(f'<{nnames}I', g.read(base + names, 4 * nnames))
+    want = name.encode()
+    lo, hi = 0, nnames - 1  # (the names are sorted)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        s = (g.read(base + name_rvas[mid], len(want) + 1) or b'').split(b'\0')[0]
+        if s == want:
+            o, = struct.unpack('<H', g.read(base + ords + 2 * mid, 2))
+            r, = struct.unpack('<I', g.read(base + funcs + 4 * o, 4))
+            return base + r
+        if s < want:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return 0
+
+
+HAND_STATES = ['on its controller', 'left to the game: controller pose lost', 'left to the game: hands off',
+               'left to the game: scripted move at a door', 'posed on a door handle', 'not drawn']
+
+
+def rig(g):
+    a = exe_symbol(g, 'vr_rig_debug')
+    if not a:
+        sys.exit('this build has no vr_rig_debug (older than 2026-11-11)')
+    b = g.read(a, 32 + 2 * 104 + 2 * 24 + 8 + 32 * 24)
+    magic, size, frame, mode, scripted, settling, hands_on = struct.unpack_from('<IIQiiii', b, 0)
+    print(f'rig frame {frame}: {"1st person" if mode == 1 else "3rd person / theatre"}'
+          f'{", scripted move" if scripted else ""}{", settling (black)" if settling else ""}')
+    if magic != 0x47495256 or size != len(b):
+        sys.exit(f'vr_rig_debug layout differs (magic {magic:#x}, size {size} vs {len(b)}): update tools/skypeek.py')
+    o = 32
+    for side in range(2):
+        state, grip_ok, grab, hover, count, placed, game_f = struct.unpack_from('<iiiiQQQ', b, o)
+        f = struct.unpack_from('<15f', b, o + 40)
+        print(f'{"right" if side else "left "} hand: {HAND_STATES[state] if 0 <= state < len(HAND_STATES) else state}; mesh {count}; '
+              f'controller pose {"ok" if grip_ok else "LOST"}; last placed {frame - placed if placed else "never"} frames ago, '
+              f'drawn by the game {frame - game_f if game_f else "never"} frames ago')
+        print(f'      on controller at ({f[0]:.1f}, {f[1]:.1f}, {f[2]:.1f}); the game\'s hand at ({f[3]:.1f}, {f[4]:.1f}, {f[5]:.1f}); '
+              f'axes x ({f[6]:.2f} {f[9]:.2f} {f[12]:.2f}) y ({f[7]:.2f} {f[10]:.2f} {f[13]:.2f}) z ({f[8]:.2f} {f[11]:.2f} {f[14]:.2f})'
+              + (f'; door grab' if grab else '') + (f'; door hover {hover / 1000}' if hover else ''))
+        o += 104
+    for k in range(2):
+        hs, _, hf, rf = struct.unpack_from('<iiQQ', b, o)
+        print(f'{"shield" if k else "sword "}: {"in the " + ("right" if hs else "left") + " hand" if hs >= 0 else "not held"}, '
+              f'last seen {frame - hf if hf else "never"} frames ago')
+        o += 24
+    ev_next, = struct.unpack_from('<I', b, o)
+    o += 8
+    evs = [struct.unpack_from('<QiiQ', b, o + 24 * i) for i in range(32)]
+    evs = sorted(e for e in evs if e[0])
+    print('last changes:')
+    for ef, es, est, ec in evs[-16:]:
+        print(f'  frame {ef} ({frame - ef} ago): {"right" if es else "left"} hand -> '
+              f'{HAND_STATES[est] if 0 <= est < len(HAND_STATES) else est}, mesh {ec}')
+
+
 def monitor(out, every):
     """Waits for a game, then writes a line whenever what the VR rig depends on changes (stage, Link's pointers, whether
     the eye point agrees with Link's position, the pause masks) - a history to read after something went wrong."""
@@ -183,6 +254,8 @@ def main():
     g = Game()
     if a[0] == 'state':
         state(g)
+    elif a[0] == 'rig':
+        rig(g)
     elif a[0] == 'read':
         at, n = g.addr(a[1]), int(a[2], 0)
         print(f'{at:#x}: {fmt(g.read(at, n), mode)}')

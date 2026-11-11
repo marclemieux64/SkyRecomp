@@ -1720,6 +1720,50 @@ static void hand_k(int side, float k[12]) {
     k[3] = 0, k[7] = 0, k[11] = back;
 }
 
+// ---- the rig's state for a reader outside the game (tools/skypeek.py rig: the exe exports its symbols, so this is
+// found in the running process and read with no cost to the game). Each hand: whether its draw went on its controller
+// or was left to the game and why, its mesh, where the controller and the game's hand are; the last changes, with
+// their frames - to see afterwards what happened when the hands looked wrong.
+enum { RIG_HAND_PLACED, RIG_HAND_GRIP_LOST, RIG_HAND_OFF, RIG_HAND_SCRIPTED_DOOR, RIG_HAND_DOOR_POSE, RIG_HAND_NOT_DRAWN };
+typedef struct {
+    uint32_t magic, size;       // 'VRIG', sizeof
+    uint64_t frame;
+    int32_t mode, scripted, settling, hands_on;
+    struct {
+        int32_t state, grip_ok, door_grab, hover_milli;
+        uint64_t count, placed_frame, game_frame;   // (its mesh's index count; when last placed / drawn by the game)
+        float ctrl[3], game[3], axes[9];            // (world: the controller, the game's hand; the placed hand's axes)
+    } hand[2];
+    struct { int32_t side, kind_frames; uint64_t frame, rel_frame; } held[2];
+    uint32_t ev_next;
+    struct { uint64_t frame; int32_t side, state; uint64_t count; } ev[32];
+} VrRigDebug;
+VrRigDebug vr_rig_debug = {0x47495256, sizeof(VrRigDebug)};
+static void rig_debug_hand(int side, int state, const float *placed) {
+    extern uint64_t renderer_present_count(void);
+    if (side < 0 || side > 1) return;
+    VrRigDebug *d = &vr_rig_debug;
+    const uint64_t f = renderer_present_count() + 1;
+    d->frame = f, d->mode = g_rig.mode, d->scripted = g_scripted, d->settling = g_settling;
+    if (d->hand[side].state != state || d->hand[side].count != g_hand_count_cur) {
+        const uint32_t i = d->ev_next++ % 32;
+        d->ev[i].frame = f, d->ev[i].side = side, d->ev[i].state = state, d->ev[i].count = g_hand_count_cur;
+    }
+    d->hand[side].state = state, d->hand[side].grip_ok = g_grip_ok[side], d->hand[side].count = g_hand_count_cur;
+    d->hand[side].door_grab = atomic_load(&g_door_grab) == side;
+    d->hand[side].hover_milli = (int32_t)(atomic_load(&g_door_hover[side]) * 1000.0f);
+    d->hand[side].game_frame = g_hand_last_frame[side];
+    memcpy(d->hand[side].game, g_hand_last[side], sizeof d->hand[side].game);
+    if (placed) {
+        d->hand[side].placed_frame = f;
+        for (int i = 0; i < 3; i++) {
+            d->hand[side].ctrl[i] = placed[i * 4 + 3];
+            for (int j = 0; j < 3; j++) d->hand[side].axes[i * 3 + j] = placed[i * 4 + j];
+        }
+    }
+    for (int k = 0; k < 2; k++) d->held[k].side = g_held[k].side, d->held[k].frame = g_held[k].frame, d->held[k].rel_frame = g_held[k].rel_frame;
+}
+
 // (exec.c) Which hand a rigid draw is: 0 left, 1 right, -1 none
 int vr_rig_hand_side(const float *slot0, uint64_t size0, uint64_t count, uint64_t vb, uint64_t vb_size) {
     if (!slot0 || !hands_on() || !sky_vr_is_scene_projection(slot0, size0)) return -1;
@@ -1748,7 +1792,10 @@ static bool hand_block(const VrRigAnchor *a, const float reference[7], const flo
             last = f, fprintf(stderr, "[held-log] frame %llu held item on %d left to the game: %s\n", (unsigned long long)f, side,
                               !g_grip_ok[side] ? "controller pose lost" : "scripted move at a door");
     }
-    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || (g_scripted && door_at())) return false;
+    if (side < 0 || side > 1 || !g_grip_ok[side] || !hands_on() || (g_scripted && door_at())) {
+        if (!g_held_on) rig_debug_hand(side, !hands_on() ? RIG_HAND_OFF : side >= 0 && side < 2 && !g_grip_ok[side] ? RIG_HAND_GRIP_LOST : RIG_HAND_SCRIPTED_DOOR, NULL);
+        return false;
+    }
 
     float rel[9], off[3], rc[9], c[12], k[12], ck[12];
     vr_rig_relative(reference, g_grip[side], vr_rig_units_per_metre(), rel, off);
@@ -1819,12 +1866,14 @@ static bool hand_block(const VrRigAnchor *a, const float reference[7], const flo
                 w[q * 4 + 3] = knob[q] - (q == 1 ? 0.07f * u : 0.0f) + n[q] * 0.03f * u;
             }
             a_mul(game, w, out);
+            rig_debug_hand(side, RIG_HAND_DOOR_POSE, w);
             return true;
         }
     }
     hand_k(side, k);
     a_mul(c, k, ck);
     a_mul(game, ck, out);
+    rig_debug_hand(side, RIG_HAND_PLACED, ck);
     return true;
 }
 
