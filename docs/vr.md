@@ -316,6 +316,17 @@ play (grass and the training logs cut where the controller's blade passes).
   Overrides: `SKYRECOMP_VR_BEETLE_ROLL`, `_SHIFT`, `_ARM_BACK`, `_LIFT`. `[beetle-near]` log lines list other draws by
   it (how the bracelet was found).
 
+### The boss door's key puzzle (`runtime/hle/player.c`, `vr_rig.c`)
+
+From the A that examines a boss door's lock to the B that backs out (or the door opening), Link's actor +0x9478 points
+at the lock object (vtable main+0x1601018); otherwise it is 0 - the same object sits at +0x9360 while he only stands
+at the door. Found headset-free at Skyview's boss door with `SKYRECOMP_LINK_DIFF` and `SKYRECOMP_WORD_WATCH`: two
+visits, set on the A's frame and cleared on the B's both times. While it is set, 1st person hands over to the game's
+camera - its letterboxed close-up of the key and the lock - through the same switch as the Beetle's flight (held
+through a few misreads), and comes back after. `SKYRECOMP_VR_BOSS_LOCK_FP=1` stays in 1st person. Log:
+`[vr-rig] the boss door's lock examined / left`. Confirmed in the headset through Skyview's boss door; other boss doors
+are expected to be the same object.
+
 ### Frame rate and pacing
 
 - The frame rate setting (Video > Frame rate) offers 60, 120 and 144 FPS. The Skyward Sword simulation step follows
