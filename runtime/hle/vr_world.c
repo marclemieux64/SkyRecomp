@@ -15,6 +15,7 @@
 //
 // On with VR and the HUD panel (both by default) and VR Options > World Behind Menus; SKYRECOMP_VR_WORLD_IN_MENUS=0
 // turns it off, =1 forces it on.
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 

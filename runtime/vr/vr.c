@@ -323,15 +323,40 @@ static bool create_instance(void) {
         !load_global("xrCreateInstance", (PFN_xrVoidFunction *)&p_xrCreateInstance) ||
         !load_global("xrEnumerateInstanceExtensionProperties", (PFN_xrVoidFunction *)&p_xrEnumerateInstanceExtensionProperties))
         return false;
+#ifdef __ANDROID__
+    // Android (Meta Quest): the loader needs the Java VM and the activity before anything else, and so does the
+    // instance. SDL's activity started this process.
+    JNIEnv *jni = SDL_GetAndroidJNIEnv();
+    JavaVM *vm = NULL;
+    jobject activity = SDL_GetAndroidActivity();
+    if (!jni || (*jni)->GetJavaVM(jni, &vm) != JNI_OK || !activity) {
+        set_status("No Android activity for OpenXR");
+        return false;
+    }
+    PFN_xrInitializeLoaderKHR init_loader = NULL;
+    XrLoaderInitInfoAndroidKHR li = {.type = XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR, .applicationVM = vm,
+                                     .applicationContext = activity};
+    if (!load_global("xrInitializeLoaderKHR", (PFN_xrVoidFunction *)&init_loader) ||
+        !xr_ok(init_loader((const XrLoaderInitInfoBaseHeaderKHR *)&li), "xrInitializeLoaderKHR"))
+        return false;
+#endif
     if (!runtime_has_extension(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME)) {
         set_status("The active OpenXR runtime does not support Vulkan");
         return false;
     }
     // XR_KHR_visibility_mask: the parts of each eye image the headset hides (hidden_mesh_load)
     has_visibility_mask = runtime_has_extension(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
-    const char *extensions[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_VISIBILITY_MASK_EXTENSION_NAME};
-    XrInstanceCreateInfo ci = {.type = XR_TYPE_INSTANCE_CREATE_INFO, .enabledExtensionCount = has_visibility_mask ? 2 : 1,
-                               .enabledExtensionNames = extensions};
+    const char *extensions[3] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME};
+    uint32_t n_extensions = 1;
+    if (has_visibility_mask) extensions[n_extensions++] = XR_KHR_VISIBILITY_MASK_EXTENSION_NAME;
+    XrInstanceCreateInfo ci = {.type = XR_TYPE_INSTANCE_CREATE_INFO, .enabledExtensionNames = extensions};
+#ifdef __ANDROID__
+    extensions[n_extensions++] = XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME;
+    XrInstanceCreateInfoAndroidKHR android_info = {.type = XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR, .applicationVM = vm,
+                                                   .applicationActivity = activity};
+    ci.next = &android_info;
+#endif
+    ci.enabledExtensionCount = n_extensions;
     snprintf(ci.applicationInfo.applicationName, sizeof ci.applicationInfo.applicationName, "Sky Recomp");
     snprintf(ci.applicationInfo.engineName, sizeof ci.applicationInfo.engineName, "Sky Recomp");
     ci.applicationInfo.applicationVersion = ci.applicationInfo.engineVersion = 1;

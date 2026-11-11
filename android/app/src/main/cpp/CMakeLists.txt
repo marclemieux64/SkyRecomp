@@ -15,7 +15,15 @@ target_compile_definitions(skyrecomp_quest PRIVATE
 target_link_libraries(skyrecomp_quest PRIVATE
     native_app_glue
     OpenXR::openxr_loader
+    c++_static
+    c++abi
     android
     log
     vulkan)
 target_link_options(skyrecomp_quest PRIVATE "-uANativeActivity_onCreate")
+
+# The full game runtime (personal builds): android/engine.
+option(SKYRECOMP_ENGINE "Build the Sky Recomp runtime (libmain.so)" OFF)
+if(SKYRECOMP_ENGINE)
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../../../engine" engine)
+endif()

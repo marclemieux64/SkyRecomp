@@ -44,9 +44,11 @@ cache/
 /android/app/.cxx/
 /android/app/build/
 /android/local.properties
-/android/app/src/personal/
+/android/app/src/personal/jniLibs/
 /tools/quest/gui/bin/
 /tools/quest/gui/obj/
+/tools/quest/gui-linux/bin/
+/tools/quest/gui-linux/obj/
 /toolchain/
 save/
 scratch/

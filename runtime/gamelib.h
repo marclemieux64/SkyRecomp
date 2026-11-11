@@ -14,6 +14,9 @@
 #elif defined(__APPLE__)
 #define GAMELIB_NAME "skygame.dylib"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))
+#elif defined(__ANDROID__)
+#define GAMELIB_NAME "libskygame.so"  // (an APK native library)
+#define GAMELIB_EXPORT __attribute__((visibility("default")))
 #else
 #define GAMELIB_NAME "skygame.so"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))

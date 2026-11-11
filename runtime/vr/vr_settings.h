@@ -15,7 +15,11 @@ typedef struct VRConfig {
         ;                                // fraction of OpenXR's recommended per-eye resolution (0.5..2.0)
     bool desktop_mirror
 #ifdef __cplusplus
+#ifdef __ANDROID__
+        = false  // (a headset has no desktop window to mirror to)
+#else
         = true
+#endif
 #endif
         ;                                // draw the left eye in the desktop window while VR is running
     bool dynamic_resolution

@@ -37,9 +37,19 @@ target_compile_options(skygame PRIVATE
     ${SKYRECOMP_GAME_OPT} -fno-strict-aliasing -fvisibility=hidden
     -Wno-return-type -Wno-unused-label)
 
-# Generated calls resolve against the Quest runtime library when Android loads
-# the APK. Keeping the game in a separate .so prevents private generated code
-# from becoming part of the public runtime APK.
+# Generated calls resolve against the Quest runtime library (libmain.so, built by
+# Gradle from android/engine) when Android loads the APK. Keeping the game in a
+# separate .so prevents private generated code from becoming part of the public
+# runtime APK. Android only binds symbols to libraries a module names, so an
+# empty stand-in with the runtime's name records that dependency here.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime_stub.c" "void skyrecomp_runtime_stub(void) {}
+")
+add_library(runtime_stub SHARED "${CMAKE_CURRENT_BINARY_DIR}/runtime_stub.c")
+set_target_properties(runtime_stub PROPERTIES OUTPUT_NAME main
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/runtime_stub")
+target_link_options(runtime_stub PRIVATE "-Wl,-soname,libmain.so")
+add_dependencies(skygame runtime_stub)
 target_link_options(skygame PRIVATE
     "-Wl,--unresolved-symbols=ignore-all"
-    "-Wl,--exclude-libs,ALL")
+    "-Wl,--exclude-libs,ALL"
+    "-Wl,--no-as-needed" "-L${CMAKE_CURRENT_BINARY_DIR}/runtime_stub" "-lmain" "-Wl,--as-needed")

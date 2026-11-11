@@ -4,6 +4,9 @@
 
 #define XR_USE_GRAPHICS_API_VULKAN
 #define XR_NO_PROTOTYPES
+#ifdef __ANDROID__
+#include <jni.h>  // (openxr_platform.h: the Android instance structures)
+#endif
 #include <vulkan/vulkan.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
