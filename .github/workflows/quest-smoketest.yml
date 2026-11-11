@@ -32,7 +32,9 @@ jobs:
 
       - name: Build and lint
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease lintRelease
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease lintRelease
 
       - name: Verify APK
         id: apk

@@ -1,4 +1,4 @@
-# Quest smoke-test v0.1.0-pre.2
+# Quest smoke-test v0.1.0-pre.3
 
 This is a hardware-unverified developer pre-release. It does **not** contain or
 run Skyward Sword. Its purpose is to validate SkyRecomp's new Android/Quest
@@ -16,7 +16,7 @@ Expected result on Quest 2, Quest Pro, Quest 3, or Quest 3S:
 Install with SideQuest or:
 
 ```text
-adb install -r SkyRecomp-Quest-SmokeTest-0.1.0-smoketest.2.apk
+adb install -r SkyRecomp-Quest-SmokeTest-0.1.0-smoketest.3.apk
 ```
 
 Capture diagnostics while launching:
