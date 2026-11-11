@@ -149,11 +149,15 @@ static bool door_object_near(const float eye[3]) {
 }
 
 // Link is at the door (within reach of it, either side): the gesture's
-// The door is locked: its object's lock type (+0x7b9) is not 0 - measured 2026-11-04: 0 on Link's room's door, 1 / 4 / 6
-// on the academy's locked ones (+0x7ba their flag). Its handle still turns; it does not open.
-bool door_locked(void) {
-    return g_door && g_door_actor_found && *(const uint8_t *)(uintptr_t)(g_door_actor_found + 0x7b9) != 0;
-}
+// The door is locked: asked of the game's own test (the door's vtable entry 31, f_700078c9a0(door) - door_lock_tick,
+// below). The lock type (+0x7b9) alone does not say: disassembled 2026-11-10, by type (+0x7ba its scene flag)
+//   0, 2: never locked          1, 3: locked until the flag is set (no flag, 0xff: always)
+//   4: locked while the flag is set (no flag: always)
+//   5: locked while the byte at 0x7002bf98fd is 0          6: locked while it is 1
+// and a door with bit 6 of +0xc set is locked while it holds something at +0x760. Its handle still turns; it does not
+// open.
+static _Atomic bool g_locked;
+bool door_locked(void) { return g_door && atomic_load(&g_locked); }
 bool door_at(void) {
     float eye[3];
     if (!g_door || !player_eye(eye)) return false;
@@ -478,6 +482,75 @@ static uint64_t room_object(int index) {
     if (rooms < (MAIN_BASE + 0x0ull) || rooms >= 0x7800000000ull || index < 0 || index > 63) return 0;
     const uint64_t r = *(const uint64_t *)(uintptr_t)(rooms + 0xf0 + 8 * (uint64_t)index);
     return r >= (MAIN_BASE + 0x0ull) && r < 0x7800000000ull ? r : 0;
+}
+
+// (hle/vr_world.c, the game thread, every frame) Is the door Link is at locked: the game's own test, on each door
+// object standing there - locked if any says so (wrongly shut is the safe side: the game's own door prompt still works)
+void door_lock_tick(Cpu *c) {
+    bool locked = false;
+    char said[160] = "";
+    int len = 0;
+    if (g_door && atomic_load(&g_job_state) != 1)  // (not while a search is filling the list)
+        for (int i = 0; i < g_door_actor_count; i++) {
+            const uint64_t d = g_door_actors[i];
+            if (*(const uint64_t *)(uintptr_t)d != DOOR_VTABLE) continue;  // (gone with its room)
+            uint64_t saved[31];
+            memcpy(saved, c->x, sizeof saved);
+            const uint64_t sp = c->sp, pc = c->pc;
+            c->x[0] = d;
+            guest_call(c, (MAIN_BASE + 0x78c9a0ull));
+            const bool l = (c->x[0] & 0xff) != 0;
+            memcpy(c->x, saved, sizeof saved);
+            c->sp = sp, c->pc = pc;
+            locked |= l;
+            if (len < (int)sizeof said - 40)
+                len += snprintf(said + len, sizeof said - len, " [type %d flag %#x: %s]", *(const uint8_t *)(uintptr_t)(d + 0x7b9),
+                                *(const uint8_t *)(uintptr_t)(d + 0x7ba), l ? "locked" : "open");
+        }
+    static uint64_t was_door;
+    static bool was_locked;
+    if (g_door && len && (g_door != was_door || locked != was_locked)) {
+        LOG("[door] lock: %s%s (time byte %d)\n", locked ? "locked" : "not locked", said, *(const uint8_t *)(uintptr_t)(MAIN_BASE + 0x2bf98fdull));
+        was_door = g_door, was_locked = locked;
+    }
+    if (!g_door) was_door = 0;
+    atomic_store(&g_locked, locked);
+    static int census = -1;  // (RE, SKYRECOMP_DOOR_CENSUS: the game's answer for every door object of the level, as it changes)
+    if (census < 0) census = getenv("SKYRECOMP_DOOR_CENSUS") != NULL;
+    if (census) {
+        // (its own list, found here every few seconds - a hitch: g_doors is the frame thread's, and VR's only)
+        static uint64_t list[64], seen[64];
+        static int nlist;
+        static int8_t seen_locked[64];
+        static unsigned tick;
+        if (tick++ % 300 == 0) {
+            nlist = 0;
+            for (uint64_t a = HEAP_LO; a < HEAP_HI && nlist < 64; a += 8)
+                if (*(const uint64_t *)(uintptr_t)a == DOOR_VTABLE) list[nlist++] = a;
+        }
+        for (int i = 0; i < nlist; i++) {
+            const uint64_t d = list[i];
+            if (*(const uint64_t *)(uintptr_t)d != DOOR_VTABLE) continue;
+            uint64_t saved[31];
+            memcpy(saved, c->x, sizeof saved);
+            const uint64_t sp = c->sp, pc = c->pc;
+            c->x[0] = d;
+            guest_call(c, (MAIN_BASE + 0x78c9a0ull));
+            const int8_t l = (c->x[0] & 0xff) != 0;
+            memcpy(c->x, saved, sizeof saved);
+            c->sp = sp, c->pc = pc;
+            int k = 0;
+            while (k < 64 && seen[k] && seen[k] != d) k++;
+            if (k == 64) k = 0, memset(seen, 0, sizeof seen);
+            if (seen[k] == d && seen_locked[k] == l) continue;
+            seen[k] = d, seen_locked[k] = l;
+            const uint8_t *b = (const uint8_t *)(uintptr_t)d;
+            LOG("[door] census lock %#llx at %.0f %.0f %.0f: type %d flag %#x room %d rooms %d %d bit6 %d -> %s (time byte %d)\n",
+                (unsigned long long)d, *(const float *)(b + 0x144), *(const float *)(b + 0x148), *(const float *)(b + 0x14c),
+                b[0x7b9], b[0x7ba], (int8_t)b[0x17c], b[0x7bc], b[0x7bd], (b[0xc] >> 6) & 1, l ? "locked" : "not locked",
+                *(const uint8_t *)(uintptr_t)(MAIN_BASE + 0x2bf98fdull));
+        }
+    }
 }
 
 // The door's far room (the one of its two that is inactive) and the near one. False: no door object, or both active.
